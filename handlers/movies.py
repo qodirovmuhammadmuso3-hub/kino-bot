@@ -1,227 +1,220 @@
 from aiogram import Router, types, F
-from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from sqlalchemy.ext.asyncio import AsyncSession
+from services.movie_service import MovieService
+from services.user_service import UserService
+from keyboards.pagination import get_pagination_keyboard
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-import database
+from database.models import Movie, Episode
 import logging
 
 router = Router()
 
-class SearchStates(StatesGroup):
-    waiting_for_movie = State()
+class MovieStates(StatesGroup):
+    waiting_for_query = State()
     waiting_for_anime = State()
 
 def get_movie_text(movie):
-    """Kino ma'lumotlarini HTML formatida chiroyli qilib qaytaradi."""
+    # Agar kanal postidan olingan tavsif bo'lsa, uni ishlatamiz
+    if movie.description and "┝" in movie.description:
+        return f"{movie.description}\n\n🆔 <b>Kodi:</b> <code>{movie.code}</code>"
+        
+    rating_stars = "⭐" * int(movie.average_rating) if movie.average_rating > 0 else "Noma'lum"
+    description = movie.description or "Yo'q"
     text = (
-        f"<b>🎬 Nomi:</b> {movie['title']}\n"
-        f"<b>🆔 Kodi:</b> <code>{movie['movie_code']}</code>\n"
-        f"<b>📅 Yili:</b> {movie['release_year']}\n"
-        f"<b>🎭 Janri:</b> {movie['genre']}\n"
-        f"<b>⏱ Davomiyligi:</b> {movie['duration']}\n"
-        f"<b>📥 Manba:</b> {movie['source_channel']}"
+        f"<b>🎬 Nomi:</b> {movie.title}\n"
+        f"<b>🆔 Kodi:</b> <code>{movie.code}</code>\n"
+        f"<b>📅 Yili:</b> {movie.year}\n"
+        f"<b>🎭 Janri:</b> {movie.genre}\n"
+        f"<b>🌍 Tili:</b> {movie.lang.upper()}\n"
+        f"<b>⭐ Reyting:</b> {movie.average_rating:.1f} ({rating_stars})\n"
+        f"<b>👁 Ko'rishlar:</b> {movie.view_count}\n\n"
+        f"<b>📝 Tavsif:</b> {description}"
     )
-    if movie.get('is_series'):
-        text += f"\n<b>🔢 Qism:</b> {movie['episode_number']}-qism"
     return text
 
-@router.message(F.text == "🔥 Yangi kinolar")
-@router.message(Command("new"))
-async def new_movies_handler(message: types.Message):
-    movies = await database.get_latest_movies()
-    if not movies:
-        await message.answer("<b>Bazada hali kinolar yo'q.</b>", parse_mode="HTML")
-        return
-    
-    text = "<b>🆕 Oxirgi qo'shilgan kinolar:</b>\n\n"
-    for title, code in movies:
-        text += f"🎬 {title} — <code>{code}</code>\n"
-    await message.answer(text, parse_mode="HTML")
-
-@router.message(F.text == "⭐️ Top kinolar")
-@router.message(Command("top"))
-async def top_movies_handler(message: types.Message):
-    movies = await database.get_top_movies()
-    if not movies:
-        await message.answer("<b>Hali trenddagi kinolar yo'q.</b>", parse_mode="HTML")
-        return
-    
-    text = "<b>🔥 Eng ko'p so'ralgan kinolar:</b>\n\n"
-    for title, code in movies:
-        text += f"🎬 {title} — <code>{code}</code>\n"
-    await message.answer(text, parse_mode="HTML")
-
 @router.message(F.text == "🔍 Kino qidirish")
-async def search_prompt_handler(message: types.Message, state: FSMContext):
-    await state.set_state(SearchStates.waiting_for_movie)
-    await message.answer(
-        "<b>🔍 Marhamat, kino nomini yoki kodini yuboring:</b>\n\n"
-        "<i>Masalan: o'rgimchak odam yoki 01</i>",
-        parse_mode="HTML"
-    )
+async def start_search(message: types.Message, state: FSMContext):
+    await state.set_state(MovieStates.waiting_for_query)
+    await message.answer("🔍 Qidirilayotgan kino nomi yoki kodini yuboring:")
+
+@router.message(MovieStates.waiting_for_query)
+async def search_handler(message: types.Message, state: FSMContext, session: AsyncSession):
+    query = message.text.strip()
+    await process_movie_search(query, message, state, session)
 
 @router.message(F.text == "🔍 Anime qidirish")
-async def anime_search_prompt_handler(message: types.Message, state: FSMContext):
-    await state.set_state(SearchStates.waiting_for_anime)
-    await message.answer(
-        "<b>🔍 Marhamat, anime nomini yoki kodini yuboring:</b>\n\n"
-        "<i>Masalan: Naruto yoki 1</i>",
-        parse_mode="HTML"
-    )
+async def start_anime_search(message: types.Message, state: FSMContext):
+    await state.set_state(MovieStates.waiting_for_anime)
+    await message.answer("🔍 Qidirilayotgan anime nomi yoki kodini yuboring:")
 
-@router.message(SearchStates.waiting_for_movie, F.text & ~F.text.startswith("/"))
-async def movie_search_handler(message: types.Message, state: FSMContext):
-    await process_search(message, state, content_type="movie")
-
-@router.message(SearchStates.waiting_for_anime, F.text & ~F.text.startswith("/"))
-async def anime_search_handler(message: types.Message, state: FSMContext):
-    await process_search(message, state, content_type="anime")
-
-@router.message(F.text & ~F.text.startswith("/"), StateFilter(None))
-async def general_search_handler(message: types.Message, state: FSMContext):
-    # Har qanday holatda ham (chatda) qidirish
-    await process_search(message, state, content_type=None)
-
-async def process_search(message: types.Message, state: FSMContext, content_type: str | None = None):
+@router.message(MovieStates.waiting_for_anime)
+async def anime_search_handler(message: types.Message, state: FSMContext, session: AsyncSession):
     query = message.text.strip()
-    logging.info(f"Qidiruv so'rovi: {query}, Bo'lim: {content_type}")
-    
-    if query.isdigit():
-        # 1. Avval o'z bo'limidan qidiramiz
-        movie = await database.get_movie_by_code(query, content_type=content_type)
-        if not movie and content_type:
-            # 2. Agar topilmasa va bo'lim tanlangan bo'lsa, har qandayini qidiramiz
-            movie = await database.get_movie_by_code(query)
-        results = [movie] if movie else []
+    await process_movie_search(query, message, state, session, content_type="anime")
+
+@router.message(F.text.regexp(r'^\d+$'))
+async def direct_code_handler(message: types.Message, session: AsyncSession):
+    query = message.text.strip()
+    await process_movie_search(query, message, None, session)
+
+@router.message(F.text == "🔥 Yangi kinolar")
+async def new_movies_handler(message: types.Message, session: AsyncSession):
+    movie_service = MovieService(session)
+    results = await movie_service.get_latest_movies(limit=10)
+    if results:
+        await send_movie_list(message, "🔥 <b>Oxirgi qo'shilgan kinolar:</b>", results)
     else:
-        results = await database.search_movies(query, content_type=content_type)
-        if not results and content_type:
-            results = await database.search_movies(query)
+        await message.answer("Kinolar topilmadi.")
+
+@router.message(F.text == "⭐️ Top kinolar")
+async def top_movies_handler(message: types.Message, session: AsyncSession):
+    movie_service = MovieService(session)
+    results = await movie_service.get_top_movies(limit=10)
+    if results:
+        await send_movie_list(message, "⭐️ <b>Eng ko'p ko'rilgan kinolar:</b>", results)
+    else:
+        await message.answer("Kinolar topilmadi.")
+
+async def send_movie_list(message: types.Message, title: str, results):
+    text = f"{title}\n\n"
+    builder = InlineKeyboardBuilder()
+    for i, m in enumerate(results, 1):
+        text += f"{i}. {m.title} (<code>{m.code}</code>)\n"
+        builder.button(text=f"{i}", callback_data=f"view_movie:{m.code}")
     
-    if not results or not results[0]:
-        msg = "<b>Uzr, bu kontent hali bazamizda yo'q 😔</b>"
-        if content_type == "movie": msg = "<b>Uzr, bu kino hali bazamizda yo'q 😔</b>"
-        elif content_type == "anime": msg = "<b>Uzr, bu anime hali bazamizda yo'q 😔</b>"
-        
-        await message.answer(
-            f"{msg}\n<i>Yangi kontentlar muntazam ravishda qo'shib boriladi.</i>",
-            parse_mode="HTML"
-        )
+    builder.adjust(5)
+    await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+async def process_movie_search(query: str, message: types.Message, state: FSMContext | None, session: AsyncSession, content_type=None):
+    movie_service = MovieService(session)
+    
+    # 1. Kod bo'yicha qidirish
+    movie = await movie_service.get_movie_by_code(query)
+    if movie and (not content_type or movie.content_type == content_type):
+        await send_movie_view(message, movie, session)
+        if state: await state.clear()
         return
 
-    movie = results[0]
-    # movie_code string ekanligiga ishonch hosil qilamiz
-    await database.increment_request_count(str(movie["movie_code"]))
-    
-    text = get_movie_text(movie)
-    reply_markup = await show_movie_with_episodes(movie)
+    # 2. Nom bo'yicha qidirish
+    results = await movie_service.search_movies(query, limit=10, offset=0)
+    if content_type:
+        results = [m for m in results if m.content_type == content_type]
+        
+    if not results:
+        if state: # Faqat qidirish holatida bo'lsa javob beramiz (tasodifiy raqamlarga xalaqit bermaslik uchun)
+            await message.answer("😔 Uzr, bunday kino topilmadi.")
+        return
 
-    from config import TRAILER_CH_DATA
-    channel_link = TRAILER_CH_DATA["link"] or "https://t.me/search"
-    channel_btn = types.InlineKeyboardButton(text="📢 Asosiy kanalimiz", url=channel_link)
+    # Paginatsiyali ro'yxat
+    text = f"🔍 <b>'{query}' bo'yicha natijalar:</b>\n\n"
+    builder = InlineKeyboardBuilder()
+    for i, m in enumerate(results, 1):
+        text += f"{i}. {m.title} (<code>{m.code}</code>)\n"
+        builder.button(text=f"{i}", callback_data=f"view_movie:{m.code}")
+    
+    builder.adjust(5)
+    await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+async def send_movie_view(message: types.Message, movie, session: AsyncSession):
+    movie_service = MovieService(session)
+    user_service = UserService(session)
+    
+    # Statistikani oshirish va tarixga qo'shish
+    movie.view_count += 1
+    user = await user_service.get_or_create_user(message.from_user.id, "", "")
+    await user_service.add_history(user.id, movie.id)
+    await session.commit()
+
+    text = get_movie_text(movie)
     
     builder = InlineKeyboardBuilder()
-    if reply_markup:
-        builder = InlineKeyboardBuilder.from_markup(reply_markup)
+    builder.button(text="📌 Watchlist (Saqlash)", callback_data=f"add_watchlist:{movie.id}")
+    builder.button(text="⭐ Baholash", callback_data=f"rate_movie:{movie.id}")
+    builder.button(text="💬 Sharhlar", callback_data=f"view_comments:{movie.id}")
     
-    builder.row(channel_btn)
-    reply_markup = builder.as_markup()
+    if movie.is_series:
+        builder.button(text="📺 Barcha qismlar", callback_data=f"view_episodes:{movie.id}:0")
+        builder.button(text="🔔 Obuna bo'lish", callback_data=f"sub_series:{movie.id}")
 
-    if movie.get('file_id'):
-        media_id = movie['file_id']
-        media_type = movie.get('media_type', 'video')
-        try:
-            if media_type == 'photo':
-                await message.answer_photo(media_id, caption=text, parse_mode="HTML", reply_markup=reply_markup)
-            elif media_type == 'document':
-                try:
-                    await message.answer_document(media_id, caption=text, parse_mode="HTML", reply_markup=reply_markup)
-                except Exception as e:
-                    if "can't use" in str(e).lower():
-                        await message.answer_video(media_id, caption=text, parse_mode="HTML", reply_markup=reply_markup)
-                    else: raise e
-            else: # video
-                try:
-                    await message.answer_video(media_id, caption=text, parse_mode="HTML", reply_markup=reply_markup)
-                except Exception as e:
-                    if "can't use" in str(e).lower():
-                        # Agar video deb o'ylangan narsa aslida rasm yoki hujjat bo'lsa
-                        await message.answer_photo(media_id, caption=text, parse_mode="HTML", reply_markup=reply_markup)
-                    else: raise e
-        except Exception as e:
-            logging.error(f"Xabar yuborishda xato: {e}")
-            await message.answer(f"{text}\n\n🔗 <a href='{movie.get('post_link') or '#'}'>Kino havolasi</a>", parse_mode="HTML", reply_markup=reply_markup)
+    builder.adjust(1)
+    
+    if movie.media_type == "photo":
+        await message.answer_photo(movie.file_id, caption=text, reply_markup=builder.as_markup(), parse_mode="HTML")
     else:
-        await message.answer(f"{text}\n\n🔗 <a href='{movie.get('post_link') or '#'}'>Kino havolasi</a>", parse_mode="HTML", reply_markup=reply_markup)
+        await message.answer_video(movie.file_id, caption=text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-async def show_movie_with_episodes(movie):
-    """Kino uchun tugmalarni tayyorlab beradi."""
-    if movie.get('is_series'):
-        episodes = await database.get_episodes(movie['title'])
-        # Serial bo'lsa, hatto bitta qism bo'lsa ham tugmalarni chiqaramiz
-        if episodes:
-            builder = InlineKeyboardBuilder()
-            for ep in episodes:
-                btn_text = f"{ep['episode_number']}-qism"
-                builder.add(types.InlineKeyboardButton(text=btn_text, callback_data=f"vid:{ep['movie_code']}"))
-            builder.adjust(3)
-            return builder.as_markup()
-    return None
+# --- Callback Handlers ---
 
-@router.callback_query(F.data.startswith("vid:"))
-async def episode_callback_handler(callback: types.CallbackQuery):
+@router.callback_query(F.data.startswith("view_movie:"))
+async def process_view_movie_callback(callback: types.CallbackQuery, session: AsyncSession):
     code = callback.data.split(":")[1]
-    movie = await database.get_movie_by_code(code)
+    movie_service = MovieService(session)
+    movie = await movie_service.get_movie_by_code(code)
     
-    if not movie:
-        await callback.answer("Kontent topilmadi!", show_alert=True)
-        return
-    
-    text = get_movie_text(movie)
-    reply_markup = None
-    
-    if movie.get('is_series'):
-        episodes = await database.get_episodes(movie['title'])
-        if episodes:
-            builder = InlineKeyboardBuilder()
-            for ep in episodes:
-                btn_text = f"{ep['episode_number']}-qism"
-                style_text = f"✅ {btn_text}" if str(ep['movie_code']) == str(code) else btn_text
-                builder.add(types.InlineKeyboardButton(text=style_text, callback_data=f"vid:{ep['movie_code']}"))
-            builder.adjust(3)
-            # Kanal tugmasini ham qo'shamiz
-            from config import TRAILER_CH_DATA
-            channel_link = TRAILER_CH_DATA["link"] or "https://t.me/search"
-            builder.row(types.InlineKeyboardButton(text="📢 Asosiy kanalimiz", url=channel_link))
-            
-            text += f"\n\n<b>📺 Barcha qismlar:</b>"
-            reply_markup = builder.as_markup()
-
-    if movie.get('file_id'):
-        media_id = movie['file_id']
-        media_type = movie.get('media_type', 'video')
-        try:
-            if media_type == 'photo':
-                await callback.message.answer_photo(media_id, caption=text, reply_markup=reply_markup, parse_mode="HTML")
-            elif media_type == 'document':
-                try:
-                    await callback.message.answer_document(media_id, caption=text, reply_markup=reply_markup, parse_mode="HTML")
-                except Exception as e:
-                    if "can't use" in str(e).lower():
-                        await callback.message.answer_video(media_id, caption=text, reply_markup=reply_markup, parse_mode="HTML")
-                    else: raise e
-            else: # video
-                try:
-                    await callback.message.answer_video(media_id, caption=text, reply_markup=reply_markup, parse_mode="HTML")
-                except Exception as e:
-                    if "can't use" in str(e).lower():
-                        await callback.message.answer_photo(media_id, caption=text, reply_markup=reply_markup, parse_mode="HTML")
-                    else: raise e
-        except Exception as e:
-            logging.error(f"Callback xato: {e}")
-            await callback.message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
+    if movie:
+        await send_movie_view(callback.message, movie, session)
+        await callback.answer()
     else:
-        await callback.message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
+        await callback.answer("😔 Uzr, kino topilmadi.", show_alert=True)
+
+@router.callback_query(F.data.startswith("view_movie_id:"))
+async def process_view_movie_id_callback(callback: types.CallbackQuery, session: AsyncSession):
+    movie_id = int(callback.data.split(":")[1])
+    movie = await session.get(Movie, movie_id)
+    
+    if movie:
+        await send_movie_view(callback.message, movie, session)
+        await callback.answer()
+    else:
+        await callback.answer("😔 Uzr, kino topilmadi.", show_alert=True)
+
+@router.callback_query(F.data.startswith("view_episodes:"))
+async def view_episodes_handler(callback: types.CallbackQuery, session: AsyncSession):
+    parts = callback.data.split(":")
+    movie_id = int(parts[1])
+    offset = int(parts[2])
+    
+    movie_service = MovieService(session)
+    episodes = await movie_service.get_episodes(movie_id)
+    
+    if not episodes:
+        await callback.answer("⚠️ Hali qismlar qo'shilmagan.", show_alert=True)
+        return
         
+    text = "📺 <b>Barcha qismlar:</b>\n\n"
+    builder = InlineKeyboardBuilder()
+    for e in episodes:
+        builder.button(text=f"{e.episode_number}-qism", callback_data=f"play_ep:{e.id}")
+        
+    builder.button(text="🔙 Orqaga", callback_data=f"view_movie_id:{movie_id}")
+    builder.adjust(2)
+    
+    await callback.message.edit_reply_markup(reply_markup=builder.as_markup())
     await callback.answer()
+
+@router.callback_query(F.data.startswith("sub_series:"))
+async def subscribe_series(callback: types.CallbackQuery, session: AsyncSession):
+    movie_id = int(callback.data.split(":")[1])
+    movie_service = MovieService(session)
+    user_service = UserService(session)
+    
+    user = await user_service.get_or_create_user(callback.from_user.id, "", "")
+    subscribed = await movie_service.subscribe_to_series(user.id, movie_id)
+    
+    if subscribed:
+        await callback.answer("🔔 Siz yangi qismlarga obuna bo'ldingiz!", show_alert=True)
+    else:
+        await callback.answer("⚠️ Siz allaqachon obuna bo'lgansiz.")
+
+@router.callback_query(F.data.startswith("play_ep:"))
+async def play_episode_callback(callback: types.CallbackQuery, session: AsyncSession):
+    ep_id = int(callback.data.split(":")[1])
+    episode = await session.get(Episode, ep_id)
+    
+    if episode:
+        await callback.message.answer_video(episode.file_id, caption=f"🎬 {episode.episode_number}-qism")
+        await callback.answer()
+    else:
+        await callback.answer("😔 Uzr, qism topilmadi.", show_alert=True)

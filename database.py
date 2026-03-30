@@ -36,6 +36,33 @@ async def init_db():
                 request_count INTEGER DEFAULT 0
             )
         ''')
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS ad_channels (
+                channel_id TEXT PRIMARY KEY,
+                channel_link TEXT NOT NULL,
+                date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        await db.commit()
+
+async def get_ad_channels():
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('SELECT channel_id, channel_link FROM ad_channels') as cursor:
+            rows = await cursor.fetchall()
+            return [{"id": row["channel_id"], "link": row["channel_link"]} for row in rows]
+
+async def add_ad_channel(channel_id, channel_link):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute('''
+            INSERT OR REPLACE INTO ad_channels (channel_id, channel_link, date_added)
+            VALUES (?, ?, ?)
+        ''', (channel_id, channel_link, datetime.datetime.now()))
+        await db.commit()
+
+async def remove_ad_channel(channel_id):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute('DELETE FROM ad_channels WHERE channel_id = ?', (channel_id,))
         await db.commit()
 
 async def get_next_movie_code(content_type="movie"):
@@ -174,3 +201,53 @@ async def update_movie_field(movie_code, update_data):
         params = list(update_data.values()) + [str(movie_code)]
         await db.execute(sql, params)
         await db.commit()
+async def get_genres(content_type=None):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        sql = 'SELECT DISTINCT genre FROM movies WHERE genre != "Noma\'lum"'
+        params = []
+        if content_type:
+            sql += ' AND content_type = ?'
+            params.append(content_type)
+        async with db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [row[0] for row in rows if row[0]]
+
+async def get_years(content_type=None):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        sql = 'SELECT DISTINCT release_year FROM movies WHERE release_year != "0" AND release_year != "Noma\'lum"'
+        params = []
+        if content_type:
+            sql += ' AND content_type = ?'
+            params.append(content_type)
+        sql += ' ORDER BY release_year DESC'
+        async with db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [row[0] for row in rows if row[0]]
+
+async def get_movies_by_genre(genre, content_type=None, limit=20):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        sql = 'SELECT * FROM movies WHERE genre = ?'
+        params = [genre]
+        if content_type:
+            sql += ' AND content_type = ?'
+            params.append(content_type)
+        sql += ' LIMIT ?'
+        params.append(limit)
+        async with db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+async def get_movies_by_year(year, content_type=None, limit=20):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        sql = 'SELECT * FROM movies WHERE release_year = ?'
+        params = [year]
+        if content_type:
+            sql += ' AND content_type = ?'
+            params.append(content_type)
+        sql += ' LIMIT ?'
+        params.append(limit)
+        async with db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]

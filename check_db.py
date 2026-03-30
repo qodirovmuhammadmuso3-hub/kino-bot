@@ -1,18 +1,18 @@
 import asyncio
-from database import get_latest_movies, init_db
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy import select
+from database.models import BotSetting
 
-async def check():
-    print("--- MA'LUMOTLAR BAZASI NI SOZLASH ---")
-    await init_db()
-    print("Jadvallar yaratildi yoki tekshirildi.")
+async def check_settings():
+    engine = create_async_engine("sqlite+aiosqlite:///bot_database.db")
+    async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     
-    print("\n--- OXIRGI QO'SHILGAN KINOLAR ---")
-    movies = await get_latest_movies(10)
-    if not movies:
-        print("Baza bo'sh.")
-    for title, code in movies:
-        print(f"KOD: {code} | NOMI: {title}")
-    print("--------------------------")
+    async with async_session() as session:
+        result = await session.execute(select(BotSetting))
+        settings = result.scalars().all()
+        for s in settings:
+            print(f"{s.name}: {s.value}")
 
 if __name__ == "__main__":
-    asyncio.run(check())
+    asyncio.run(check_settings())

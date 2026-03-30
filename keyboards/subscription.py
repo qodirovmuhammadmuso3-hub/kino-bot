@@ -1,9 +1,8 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from config import REQUIRED_CHANNELS
 
-def get_subscription_kb():
+def get_subscription_kb(channels):
     kb_list = []
-    for ch in REQUIRED_CHANNELS:
+    for ch in channels:
         # ch endi lug'at: {"id": "...", "link": "..."}
         kb_list.append([InlineKeyboardButton(text="📢 Kanalga a'zo bo'lish", url=ch["link"])])
     

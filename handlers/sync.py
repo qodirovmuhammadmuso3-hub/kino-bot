@@ -1,8 +1,11 @@
 import re
 import logging
+import os
 from aiogram import Router, types, Bot
-import database
-from config import ADMIN_ID
+from sqlalchemy.ext.asyncio import AsyncSession
+from services.movie_service import MovieService
+from services.setting_service import SettingService
+from config import ADMIN_ID, parse_channel
 
 router = Router()
 
@@ -17,40 +20,46 @@ def parse_episode(text, raw_title):
     if ep_match:
         is_series = True
         episode_number = int(ep_match.group(1))
-        # Nomdan qism qismini olib tashlash (guruhlash uchun)
-        # Sarlavha oxiridagi chiziqcha, nuqta va bo'sh joylarni tozalaymiz
         title = re.sub(r'\d+\s*[- ]?qism.*', '', raw_title, flags=re.IGNORECASE)
         title = title.strip().rstrip('-._ ')
     
     return is_series, episode_number, title
 
 @router.channel_post()
-async def sync_movie_handler(post: types.Message, bot: Bot):
-    from config import TRAILER_CHANNEL, ANIME_CHANNEL, MOVIE_CHANNEL
+async def sync_movie_handler(post: types.Message, bot: Bot, session: AsyncSession):
+    setting_service = SettingService(session)
+    movie_service = MovieService(session)
     
-    # Kanalni aniqlash
+    # DB dan olish yoki config dan (default)
+    t_raw = await setting_service.get_setting("trailer_channel", os.getenv("TRAILER_CHANNEL", ""))
+    a_raw = await setting_service.get_setting("anime_channel", os.getenv("ANIME_CHANNEL", ""))
+    m_raw = await setting_service.get_setting("movie_channel", os.getenv("MOVIE_CHANNEL", ""))
+    
+    TRAILER_CHANNEL_ID = parse_channel(t_raw)["id"]
+    ANIME_CHANNEL_ID = parse_channel(a_raw)["id"]
+    MOVIE_CHANNEL_ID = parse_channel(m_raw)["id"]
+
+    # Kanalni aniqlash va content_type o'rnatish
     chat_id = str(post.chat.id)
     chat_username = f"@{post.chat.username}" if post.chat.username else None
-    
-    # DEBUG LOG: Kanalni aniqlashda muammo bo'lsa, bu yordam beradi
-    logging.info(f"--- YANGI POST ({post.message_id}) ---")
-    logging.info(f"Chat Info: ID={chat_id}, Username={chat_username}, Title={post.chat.title}")
     
     def check_channel(conf_val, c_id, c_un):
         if not conf_val: return False
         conf_str = str(conf_val).lower()
-        res = bool(c_id == conf_str or (c_un and c_un.lower() == conf_str))
-        return res
+        return bool(c_id == conf_str or (c_un and c_un.lower() == conf_str))
 
-    is_trailer = check_channel(TRAILER_CHANNEL, chat_id, chat_username)
-    is_movie = check_channel(MOVIE_CHANNEL, chat_id, chat_username)
-    is_anime = check_channel(ANIME_CHANNEL, chat_id, chat_username)
+    is_trailer = check_channel(TRAILER_CHANNEL_ID, chat_id, chat_username)
+    is_movie = check_channel(MOVIE_CHANNEL_ID, chat_id, chat_username)
+    is_anime = check_channel(ANIME_CHANNEL_ID, chat_id, chat_username)
 
-    logging.info(f"Match results: is_movie={is_movie}, is_trailer={is_trailer}, is_anime={is_anime}")
-
-    if not (is_trailer or is_movie or is_anime):
-        logging.info("Bu kanal configda topilmadi. O'tkazib yuborildi.")
+    if is_anime: content_type = "anime"
+    elif is_trailer: content_type = "trailer"
+    elif is_movie: content_type = "movie"
+    else:
+        logging.info(f"YOT KANAL: Chat ID={chat_id}, Username={chat_username}, Title={post.chat.title}")
         return
+
+    logging.info(f"--- MATCH ({content_type.upper()}) --- MsgID={post.message_id}")
 
     msg_text = post.caption or post.text or ""
     media = post.video or post.document or (post.photo[-1] if post.photo else None)
@@ -60,169 +69,70 @@ async def sync_movie_handler(post: types.Message, bot: Bot):
     elif post.photo: media_type = "photo"
     elif post.document: media_type = "document"
 
-    # 1. Matndan kodni qidirish
-    temp_text = re.sub(r'\d+\s*[- ]?qism', '', msg_text, flags=re.IGNORECASE)
-    code_match = re.search(r'\b\d+\b', temp_text)
-    
     code = None
-    if code_match:
-        code = code_match.group(0)
-        content_type = "anime" if is_anime else "movie"
-        logging.info(f"Matndan kod topildi: {code} ({content_type})")
+    
+    # 1. Matndan kodni qidirish (Trailer uchun o'qimasdan o'tamiz - Foydalanuvchi talabi)
+    if not is_trailer:
+        clean_text = re.sub(r'(?:qismlar|yili|davomiyligi|sifat|tel)[\s:]*\d+', '', msg_text, flags=re.IGNORECASE)
+        clean_text = re.sub(r'\d+\s*[- ]?qism', '', clean_text, flags=re.IGNORECASE)
         
-        # O'z turiga qarab qidiramiz
-        movie = await database.get_movie_by_code(code)
-        
-        if movie:
-            # Agar bazada bo'lsa, lekin file_id bo'lmasa yoki turlari to'g'ri kelsa, yangilaymiz
-            if media and (not movie.get('file_id') or movie.get('content_type') == content_type):
-                update_data = {
-                    "file_id": media.file_id,
-                    "media_type": media_type,
-                    "content_type": content_type
-                }
-                # Agar sarlavha Noma'lum bo'lsa, yangilaymiz
-                if movie.get('title') == "Noma'lum" or not movie.get('title'):
-                    lines = msg_text.split('\n')
-                    raw_title = lines[0][:50] if lines[0] else None
-                    if raw_title:
-                        is_ser, ep_num, new_title = parse_episode(msg_text, raw_title)
-                        update_data["title"] = new_title or raw_title
-                        update_data["is_series"] = is_ser
-                        update_data["episode_number"] = ep_num
-
-                await database.update_movie_field(code, update_data)
-                logging.info(f"Mavjud kontent yangilandi (file_id qo'shildi): {code}")
-                
-                # Adminga xabar yuborish
-                try:
-                    admin_msg = (
-                        f"✅ <b>Kontent yangilandi!</b>\n\n"
-                        f"🆔 Kod: <code>{code}</code>\n"
-                        f"🎬 Nomi: {movie.get('title')}\n"
-                        f"📺 Tur: {content_type.capitalize()}\n"
-                        f"📢 Kanal: {post.chat.title}"
-                    )
-                    await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
-                except Exception as e:
-                    logging.error(f"Adminga xabar yuborishda xato: {e}")
-
-            me = await bot.get_me()
-            url = f"https://t.me/{me.username}?start={code}"
-            # Yangilangan ma'lumotlarni qayta o'qiymiz
-            movie = await database.get_movie_by_code(code)
-            btn_text = "🤖 Botga o'tish"
-            kb = [[types.InlineKeyboardButton(text=btn_text, url=url)]]
-            await bot.edit_message_reply_markup(
-                chat_id=post.chat.id,
-                message_id=post.message_id,
-                reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb)
-            )
-            logging.info(f"Tugma yangilandi: {code}")
-            return
-        
-        # 1.2 Trevor kanali bo'lsa faqat tugma qo'yish (bazaga qo'shmasdan)
-        if is_trailer and media:
-            me = await bot.get_me()
-            url = f"https://t.me/{me.username}?start={code}"
-            kb = [[types.InlineKeyboardButton(text="🤖 Botga o'tish", url=url)]]
-            try:
-                await bot.edit_message_reply_markup(
-                    chat_id=post.chat.id,
-                    message_id=post.message_id,
-                    reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb)
-                )
-                logging.info(f"Treylerga tugma qo'shildi: {code}")
-            except Exception as e:
-                logging.error(f"Treylerga tugma qo'shishda xato: {e}")
-            return
-
-        # 1.3 Agar bazada bo'lmasa va Treyler bo'lmasa, yangi sifatida qo'shish
-        if not is_trailer and media:
-            lines = msg_text.split('\n')
-            raw_title = lines[0][:50] if lines[0] else "Noma'lum"
+        code_match = re.search(r'(?:kod|🆔|id)[\s:]*(\d+)', clean_text, re.IGNORECASE)
+        if not code_match:
+            code_match = re.search(r'\b\d+\b', clean_text)
             
-            is_series, episode_number, title = parse_episode(msg_text, raw_title)
-            if not title: title = "Anime Serial" if is_anime else "Serial"
+        if code_match:
+            code = code_match.group(1) if len(code_match.groups()) > 0 else code_match.group(0)
+            logging.info(f"KOD TOPILDI: {code} (Turi: {content_type})")
             
-            try:
-                await database.add_movie(
-                    movie_code=code, title=title, year=0, genre="Noma'lum",
-                    duration="Noma'lum", file_id=media.file_id,
-                    post_link=f"https://t.me/{post.chat.username}/{post.message_id}" if post.chat.username else None,
-                    source_channel=chat_username or post.chat.title,
-                    content_type=content_type, media_type=media_type,
-                    is_series=is_series, episode_number=episode_number
-                )
-                me = await bot.get_me()
-                url = f"https://t.me/{me.username}?start={code}"
-                kb = [[types.InlineKeyboardButton(text="🤖 Botga o'tish", url=url)]]
-                await bot.edit_message_reply_markup(
-                    chat_id=post.chat.id,
-                    message_id=post.message_id,
-                    reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb)
-                )
-                logging.info(f"Yangi {content_type} bazaga qo'shildi: {code}")
+            movie = await movie_service.get_movie_by_code(code)
+            if movie:
+                # O'ZGARTIRILSIN (YANGI MATN VA FAYLGA)
+                if media:
+                    update_data = {"file_id": media.file_id, "media_type": media_type, "description": msg_text}
+                    lines = msg_text.split('\n') if msg_text else []
+                    raw_title = lines[0][:50] if lines else movie.title
+                    is_ser, ep_num, new_title = parse_episode(msg_text, raw_title)
+                    update_data["title"] = new_title or raw_title
+                    update_data["is_series"] = is_ser
+                    
+                    await movie_service.update_movie_by_code(code, **update_data)
+                    logging.info(f"YANGILANDI (OVERWRITE): {code}")
+            else:
+                if media:
+                    lines = msg_text.split('\n') if msg_text else []
+                    raw_title = lines[0][:50] if lines else "Noma'lum"
+                    is_series, ep_num, title = parse_episode(msg_text, raw_title)
+                    await movie_service.add_movie(code=code, title=title, file_id=media.file_id, content_type=content_type, media_type=media_type, is_series=is_series, description=msg_text)
+                    logging.info(f"YANGI QO'SHILDI: {code}")
 
-                # Adminga xabar yuborish
-                try:
-                    admin_msg = (
-                        f"🆕 <b>Yangi kontent qo'shildi!</b>\n\n"
-                        f"🆔 Kod: <code>{code}</code>\n"
-                        f"🎬 Nomi: {title}\n"
-                        f"📺 Tur: {content_type.capitalize()}\n"
-                        f"📢 Kanal: {post.chat.title}"
-                    )
-                    await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
-                except Exception as e:
-                    logging.error(f"Adminga xabar yuborishda xato: {e}")
-            except Exception as e:
-                logging.error(f"Bazaga qo'shishda xato (ehtimol dublikat kod): {e}")
-            return
-
-    # 2. Hech qanday kod topilmadi, va bu Kino yoki Anime kanali bo'lsa (Avtomatik kod berish)
-    if (is_movie or is_anime) and not is_trailer and media:
-        content_type = "anime" if is_anime else "movie"
-        code = await database.get_next_movie_code(content_type)
-        logging.info(f"Matnda kod yo'q. Avtomatik kod berildi: {code} ({content_type})")
+    # 2. Avtomatik kod berish (Matnda kod topilmasa yoki Trailer kanali bo'lsa)
+    if not code and media:
+        code = await movie_service.get_next_movie_code(content_type)
+        logging.info(f"AVTOMATIK KOD BERILYAPTI: {code} ({content_type})")
         
-        lines = msg_text.split('\n')
-        raw_title = lines[0][:50] if lines[0] else f"{content_type.capitalize()} {code}"
+        lines = msg_text.split('\n') if msg_text else []
+        raw_title = lines[0][:50] if lines else f"{content_type.capitalize()} {code}"
+        is_series, ep_num, title = parse_episode(msg_text, raw_title)
         
-        is_series, episode_number, title = parse_episode(msg_text, raw_title)
-        if not title: title = "Anime Serial" if is_anime else "Kino"
+        await movie_service.add_movie(code=code, title=title, file_id=media.file_id, content_type=content_type, media_type=media_type, is_series=is_series, description=msg_text)
 
+    # 3. Postni yangilash (Kod va tugma)
+    if code:
+        me = await bot.get_me()
+        url = f"https://t.me/{me.username}?start={code}"
+        kb = [[types.InlineKeyboardButton(text="🤖 Botga o'tish", url=url)]]
+        
+        new_caption = msg_text
+        if f"Kodi: {code}" not in new_caption:
+            new_caption += f"\n\n🆔 <b>Kodi: {code}</b>"
+            
         try:
-            await database.add_movie(
-                movie_code=code, title=title, year=0, genre="Noma'lum",
-                duration="Noma'lum", file_id=media.file_id,
-                post_link=f"https://t.me/{post.chat.username}/{post.message_id}" if post.chat.username else None,
-                source_channel=chat_username or post.chat.title,
-                content_type=content_type, media_type=media_type,
-                is_series=is_series, episode_number=episode_number
-            )
-            me = await bot.get_me()
-            kb = [[types.InlineKeyboardButton(text="🤖 Botga o'tish", url=f"https://t.me/{me.username}?start={code}")]]
-            await bot.edit_message_reply_markup(
-                chat_id=post.chat.id, 
-                message_id=post.message_id, 
-                reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb)
-            )
-            logging.info(f"{content_type.capitalize()} avtomatik qo'shildi: {code}")
-
-            # Adminga xabar yuborish
-            try:
-                admin_msg = (
-                    f"🤖 <b>Avtomatik kod berildi!</b>\n\n"
-                    f"🆔 Kod: <code>{code}</code>\n"
-                    f"🎬 Nomi: {title}\n"
-                    f"📺 Tur: {content_type.capitalize()}\n"
-                    f"📢 Kanal: {post.chat.title}"
-                )
-                await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
-            except Exception as e:
-                logging.error(f"Adminga xabar yuborishda xato: {e}")
+            if post.caption:
+                await bot.edit_message_caption(chat_id=post.chat.id, message_id=post.message_id, caption=new_caption, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+            else:
+                await bot.edit_message_reply_markup(chat_id=post.chat.id, message_id=post.message_id, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+            logging.info(f"POST YANGILANDI: {code}")
         except Exception as e:
-            logging.error(f"Avtomatik qo'shish yoki tugma qo'yishda xato: {e}")
+            logging.error(f"Postni tahrirlashda xato: {e}")
 
     return

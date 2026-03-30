@@ -1,107 +1,67 @@
 from aiogram import Router, types, F
-from aiogram.filters import Command
-import re
-from keyboards.subscription import get_subscription_kb
-from keyboards.main_menu import get_main_menu
-from config import REQUIRED_CHANNELS
-import database
+from aiogram.filters import CommandStart, Command, CommandObject
+from sqlalchemy.ext.asyncio import AsyncSession
+from services.user_service import UserService
+from keyboards.general import get_main_menu
+import logging
 
 router = Router()
 
-@router.message(Command("start"))
-async def start_handler(message: types.Message):
-    # Foydalanuvchini bazaga qo'shish
-    await database.add_user(
+@router.message(CommandStart())
+async def start_handler(message: types.Message, session: AsyncSession, command: CommandObject = None):
+    user_service = UserService(session)
+    user = await user_service.get_or_create_user(
         user_id=message.from_user.id,
         full_name=message.from_user.full_name,
         username=message.from_user.username
     )
     
-    # Deep link tekshirish (/start 1 kabi)
-    args = message.text.split()
-    if len(args) > 1:
-        code = args[1]
-        # Avval ixtiyoriy turdagisini qidiramiz (deep linklarda bu normal holat)
-        movie = await database.get_movie_by_code(code)
-        if movie:
-            from handlers.movies import get_movie_text, show_movie_with_episodes
-            text = get_movie_text(movie)
-            reply_markup = await show_movie_with_episodes(movie)
-            
-            if movie.get('file_id'):
-                media_type = movie.get('media_type', 'video')
-                if media_type == 'photo':
-                    await message.answer_photo(movie['file_id'], caption=text, parse_mode="HTML", reply_markup=reply_markup)
-                elif media_type == 'document':
-                    await message.answer_document(movie['file_id'], caption=text, parse_mode="HTML", reply_markup=reply_markup)
-                else:
-                    await message.answer_video(movie['file_id'], caption=text, parse_mode="HTML", reply_markup=reply_markup)
-                return
+    # Deep linking (kod bilan kirish)
+    if command and command.args:
+        from handlers.movies import process_movie_search
+        await process_movie_search(command.args, message, None, session)
+        return
     
-    await message.answer(
-        "<b>🎬 Salom! Kino qidiruv botiga xush kelibsiz!</b>\n\n"
-        "Men sizga istalgan kinoni topishda va yuklab olishda yordam beraman. "
-        "Boshlash uchun pastdagi menyudan foydalaning 👇",
-        reply_markup=get_main_menu(),
-        parse_mode="HTML"
+    display_name = message.from_user.mention_html()
+    welcome_text = (
+        f"👋 <b>Assalomu alaykum, {display_name}!</b>\n\n"
+        "Kino va Anime botimizga xush kelibsiz! Bu yerda siz sevimli kinolaringizni "
+        "qidirishingiz, reyting berishingiz va Watchlist yaratishingiz mumkin."
     )
+    await message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode="HTML")
 
-@router.message(F.text == "🆘 Yordam")
+@router.callback_query(F.data == "check_subs")
+async def check_subscription_handler(callback: types.CallbackQuery, session: AsyncSession):
+    await callback.answer("⏳ Tekshirilmoqda...")
+    # Middleware yana tekshiradi, agar o'tsa start_handler chaqiriladi
+    await start_handler(callback.message, session)
+    try: await callback.message.delete()
+    except: pass
+
+@router.message(F.text == "📊 Statistika")
+async def stats_handler(message: types.Message, session: AsyncSession):
+    from services.movie_service import MovieService
+    user_service = UserService(session)
+    movie_service = MovieService(session)
+    
+    users_count = await user_service.get_total_users_count()
+    movies_count = await movie_service.get_total_movies_count()
+    
+    text = (
+        "📊 <b>Bot statistikasi:</b>\n\n"
+        f"👤 <b>Foydalanuvchilar:</b> {users_count}\n"
+        f"🎬 <b>Kinolar soni:</b> {movies_count}\n\n"
+        "Siz bilan birga o'sayotganimizdan xursandmiz! 😊"
+    )
+    await message.answer(text, parse_mode="HTML")
+
 @router.message(Command("help"))
 async def help_handler(message: types.Message):
-    # Admin linkini configdan olish yoki foydalanuvchi ma'lumotlaridan
-    # Hozircha oddiygina doimiy link yoki admin ID bilan t.me/user?id= qo'shish qiyinroq
-    # Shuning uchun matn ichida yoki tugma sifatida beramiz
-    kb = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="✍️ Adminga murojaat", url=f"tg://user?id={database.ADMIN_ID}")]
-    ])
-    
-    await message.answer(
-        "<b>📚 Botdan foydalanish bo'yicha qo'llanma:</b>\n\n"
-        "1. <b>Kino kodi</b> orqali: Shunchaki raqamli kodni yuboring (masalan: <code>01</code>).\n"
-        "2. <b>Nomi</b> orqali: Kino nomini yozing (masalan: <code>Joker</code>).\n"
-        "3. <b>Anime</b> qidirish: Anime kodini (masalan: <code>1</code>) yoki nomini yuboring.\n\n"
-        "<i>Agar bot ishlamasa yoki savollaringiz bo'lsa, adminga murojaat qiling!</i>",
-        reply_markup=kb,
-        parse_mode="HTML"
+    help_text = (
+        "<b>Botdan foydalanish bo'yicha yordam:</b>\n\n"
+        "🔍 <b>Qidirish:</b> Kino nomini yoki kodini yuboring.\n"
+        "📌 <b>Watchlist:</b> 'Keyinroq ko'raman' ro'yxatiga qo'shish uchun kino ostidagi tugmani bosing.\n"
+        "⭐ <b>Reyting:</b> Kinolarga 1 dan 5 gacha baho bering.\n"
+        "📁 <b>Bo'limlar:</b> Janrlar va yillar bo'yicha filtrlashdan foydalaning."
     )
-
-@router.message(F.text == "👨‍💻 Adminga murojaat")
-async def admin_contact_handler(message: types.Message):
-    kb = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="✍️ Adminga yozish", url=f"tg://user?id={database.ADMIN_ID}")]
-    ])
-    await message.answer(
-        "<b>👨‍💻 Admin bilan bog'lanish:</b>\n\n"
-        "Savol va takliflaringiz bo'lsa, pastdagi tugma orqali adminga yozishingiz mumkin.",
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
-
-@router.message(F.text == "📂 Bo'limlar")
-@router.message(Command("channels"))
-async def channels_handler(message: types.Message):
-    await message.answer(
-        "<b>📢 Botimiz faoliyati uchun majburiy bo'lgan kanallar:</b>",
-        reply_markup=get_subscription_kb(),
-        parse_mode="HTML"
-    )
-
-@router.callback_query(lambda c: c.data == "check_sub")
-async def check_subscription_callback(callback: types.CallbackQuery, bot):
-    user_id = callback.from_user.id
-    all_subscribed = True
-    for ch in REQUIRED_CHANNELS:
-        try:
-            # ch = {"id": "...", "link": "..."}
-            member = await bot.get_chat_member(ch["id"], user_id)
-            if member.status not in ["member", "administrator", "creator"]:
-                all_subscribed = False
-                break
-        except Exception:
-            continue
-    
-    if all_subscribed:
-        await callback.message.edit_text("✅ Obuna tasdiqlandi. Endi botdan foydalanishingiz mumkin.")
-    else:
-        await callback.answer("❌ Siz hali barcha kanallarga obuna bo'lmagansiz!", show_alert=True)
+    await message.answer(help_text, parse_mode="HTML")
