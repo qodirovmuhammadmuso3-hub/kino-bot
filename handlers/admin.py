@@ -10,7 +10,7 @@ from services.user_service import UserService
 from keyboards.admin import get_admin_menu, get_stats_keyboard
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from services.setting_service import SettingService
-from database.models import AdChannel
+from database.models import AdChannel, SupportTicket, User
 import os
 import asyncio
 
@@ -43,6 +43,9 @@ class AdminStates(StatesGroup):
     # Reklama
     waiting_for_broadcast_message = State()
     confirm_broadcast = State()
+
+    # Murojaatga javob
+    waiting_for_reply_text = State()
 
 @router.message(Command("admin"))
 async def admin_panel(message: types.Message, session: AsyncSession):
@@ -498,4 +501,74 @@ async def process_del_confirm(callback: types.CallbackQuery, session: AsyncSessi
     await session.execute(delete(AdChannel).where(AdChannel.id == ch_id))
     await session.commit()
     await callback.message.edit_text("✅ Kanal o'chirildi.")
+    await callback.answer()
+
+# --- Murojaatlar ---
+
+@router.message(F.text == "📨 Murojaatlar")
+async def list_tickets(message: types.Message, session: AsyncSession):
+    user_service = UserService(session)
+    if not await user_service.is_admin(message.from_user.id): return
+    
+    stmt = select(SupportTicket).where(SupportTicket.status == "open").order_by(SupportTicket.created_at.desc())
+    res = await session.execute(stmt)
+    tickets = res.scalars().all()
+    
+    if not tickets:
+        await message.answer("✅ Hozircha yangi murojaatlar yo'q.")
+        return
+        
+    for t in tickets:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="✍️ Javob berish", callback_data=f"reply_ticket:{t.id}")
+        builder.button(text="❌ Yopish", callback_data=f"close_ticket:{t.id}")
+        builder.adjust(2)
+        
+        await message.answer(
+            f"📨 <b>Murojaat #{t.id}</b>\nKimdan: <code>{t.user_id}</code>\n\n<b>Xabar:</b> {t.message}",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
+
+@router.callback_query(F.data.startswith("reply_ticket:"))
+async def reply_ticket_start(callback: types.CallbackQuery, state: FSMContext):
+    ticket_id = int(callback.data.split(":")[1])
+    await state.update_data(reply_ticket_id=ticket_id)
+    await state.set_state(AdminStates.waiting_for_reply_text)
+    await callback.message.answer(f"✍️ <b>#{ticket_id}</b>-murojaat uchun javobingizni yozing:", parse_mode="HTML")
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_reply_text)
+async def process_reply_text(message: types.Message, state: FSMContext, session: AsyncSession):
+    data = await state.get_data()
+    ticket_id = data['reply_ticket_id']
+    text = message.text.strip()
+    
+    ticket = await session.get(SupportTicket, ticket_id)
+    if ticket:
+        ticket.answer = text
+        ticket.status = "closed"
+        await session.commit()
+        
+        # Foydalanuvchiga yuborish
+        try:
+            await message.bot.send_message(
+                ticket.user_id,
+                f"📨 <b>Admin murojaatingizga javob berdi!</b>\n\n<b>Sizning xabaringiz:</b> {ticket.message}\n\n<b>Admin javobi:</b> {text}",
+                parse_mode="HTML"
+            )
+            await message.answer(f"✅ Javob yuborildi (Ticket #{ticket_id})")
+        except Exception as e:
+            await message.answer(f"❌ Foydalanuvchiga yuborishda xato: {e}")
+            
+    await state.clear()
+
+@router.callback_query(F.data.startswith("close_ticket:"))
+async def close_ticket(callback: types.CallbackQuery, session: AsyncSession):
+    ticket_id = int(callback.data.split(":")[1])
+    ticket = await session.get(SupportTicket, ticket_id)
+    if ticket:
+        ticket.status = "closed"
+        await session.commit()
+        await callback.message.edit_text(f"❌ Murojaat #{ticket_id} yopildi.")
     await callback.answer()

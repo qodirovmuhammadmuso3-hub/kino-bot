@@ -5,8 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from services.movie_service import MovieService
 from services.user_service import UserService
 from keyboards.pagination import get_pagination_keyboard
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 from database.models import Movie, Episode
+from keyboards.categories import get_categories_keyboard, get_genres_keyboard, get_years_keyboard, get_langs_keyboard
 import logging
 
 router = Router()
@@ -86,6 +86,62 @@ async def send_movie_list(message: types.Message, title: str, results):
     
     builder.adjust(5)
     await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+@router.message(F.text == "📂 Bo'limlar")
+async def categories_handler(message: types.Message):
+    await message.answer("📂 <b>Bo'limlardan birini tanlang:</b>", reply_markup=get_categories_keyboard(), parse_mode="HTML")
+
+@router.callback_query(F.data == "show_genres")
+async def show_genres_callback(callback: types.CallbackQuery, session: AsyncSession):
+    movie_service = MovieService(session)
+    genres = await movie_service.get_genres()
+    if not genres:
+        await callback.answer("Hali janrlar qo'shilmagan.", show_alert=True)
+        return
+    await callback.message.edit_text("🎭 <b>Janrni tanlang:</b>", reply_markup=get_genres_keyboard(genres), parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data == "show_years")
+async def show_years_callback(callback: types.CallbackQuery):
+    await callback.message.edit_text("📅 <b>Yilni tanlang:</b>", reply_markup=get_years_keyboard(), parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data == "show_langs")
+async def show_langs_callback(callback: types.CallbackQuery):
+    await callback.message.edit_text("🌍 <b>Tilni tanlang:</b>", reply_markup=get_langs_keyboard(), parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data == "back_to_categories")
+async def back_to_categories_callback(callback: types.CallbackQuery):
+    await callback.message.edit_text("📂 <b>Bo'limlardan birini tanlang:</b>", reply_markup=get_categories_keyboard(), parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("filter_genre:"))
+async def filter_genre_callback(callback: types.CallbackQuery, session: AsyncSession):
+    genre = callback.data.split(":")[1]
+    movie_service = MovieService(session)
+    results = await movie_service.get_movies_by_genre(genre)
+    await send_movie_list(callback.message, f"🎭 <b>'{genre}' janridagi kinolar:</b>", results)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("filter_year:"))
+async def filter_year_callback(callback: types.CallbackQuery, session: AsyncSession):
+    year = int(callback.data.split(":")[1])
+    movie_service = MovieService(session)
+    from sqlalchemy import select
+    stmt = select(Movie).where(Movie.year == year).limit(10)
+    res = await session.execute(stmt)
+    results = res.scalars().all()
+    await send_movie_list(callback.message, f"📅 <b>{year}-yil kinolari:</b>", results)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("filter_lang:"))
+async def filter_lang_callback(callback: types.CallbackQuery, session: AsyncSession):
+    lang = callback.data.split(":")[1]
+    movie_service = MovieService(session)
+    results = await movie_service.get_movies_by_lang(lang)
+    await send_movie_list(callback.message, f"🌍 <b>Til bo'yicha natijalar:</b>", results)
+    await callback.answer()
 
 async def process_movie_search(query: str, message: types.Message, state: FSMContext | None, session: AsyncSession, content_type=None):
     movie_service = MovieService(session)

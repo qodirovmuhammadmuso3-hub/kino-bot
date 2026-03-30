@@ -106,3 +106,14 @@ class BotSetting(Base):
     id = Column(Integer, primary_key=True)
     key = Column(String(50), unique=True, nullable=False)
     value = Column(Text, nullable=False)
+
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(BigInteger, ForeignKey("users.user_id"))
+    message = Column(Text, nullable=False)
+    answer = Column(Text)
+    status = Column(String(50), default="open") # open, closed
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    user = relationship("User")

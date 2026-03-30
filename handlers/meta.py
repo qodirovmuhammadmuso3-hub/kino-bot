@@ -1,11 +1,19 @@
 from aiogram import Router, types, F
 from aiogram.filters import CommandStart, Command, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from database.models import SupportTicket, User
 from services.user_service import UserService
 from keyboards.general import get_main_menu
 import logging
+import os
 
 router = Router()
+
+class SupportStates(StatesGroup):
+    waiting_for_support_message = State()
 
 @router.message(CommandStart())
 async def start_handler(message: types.Message, session: AsyncSession, command: CommandObject = None):
@@ -65,3 +73,38 @@ async def help_handler(message: types.Message):
         "📁 <b>Bo'limlar:</b> Janrlar va yillar bo'yicha filtrlashdan foydalaning."
     )
     await message.answer(help_text, parse_mode="HTML")
+
+@router.message(F.text == "👨‍💻 Adminga murojaat")
+async def support_start(message: types.Message, state: FSMContext):
+    await state.set_state(SupportStates.waiting_for_support_message)
+    await message.answer("✍️ <b>Adminlar uchun murojaat qoldiring:</b>\n\nMuammo yoki taklifingizni yozib yuboring, adminlarimiz tez orada javob berishadi.", parse_mode="HTML")
+
+@router.message(SupportStates.waiting_for_support_message)
+async def process_support_message(message: types.Message, state: FSMContext, session: AsyncSession):
+    text = message.text.strip()
+    if not text:
+        await message.answer("Iltimos, matnli xabar yuboring.")
+        return
+        
+    # Bazaga saqlash
+    ticket = SupportTicket(user_id=message.from_user.id, message=text)
+    session.add(ticket)
+    await session.commit()
+    
+    await message.answer("✅ <b>Murojaatingiz yuborildi!</b>\nAdminlarimiz javob berishini kuting.", parse_mode="HTML")
+    await state.clear()
+    
+    # Adminlarni xabardor qilish
+    ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+    try:
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Javob berish", callback_data=f"reply_ticket:{ticket.id}")
+        await message.bot.send_message(
+            ADMIN_ID, 
+            f"📨 <b>Yangi murojaat!</b>\nKimdan: {message.from_user.full_name} (ID: {message.from_user.id})\n\n<b>Xabar:</b> {text}",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
+    except:
+        pass
