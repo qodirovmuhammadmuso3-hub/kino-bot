@@ -1,37 +1,35 @@
 import asyncio
 import logging
 import os
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
+from aiohttp import web
 
-# Routerlar
+# Handlers
 from handlers import meta, movies, watchlist, ratings, history, filters, notifications, inline, admin, recommendations, sync
 # Middlewarelar
 from middlewares.db_session import DbSessionMiddleware
 from middlewares.throttling import ThrottlingMiddleware
-from aiohttp import web
-import asyncio
 # DB
 from database.base import engine, Base
 
 load_dotenv()
 
-async def on_startup():
-    # DB jadvallarini yaratish (PostgreSQL/SQLite)
+async def main():
+    # Logging sozlamalari
+    logging.basicConfig(level=logging.INFO)
+
+    # MB jadvallarini yaratish
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logging.info("Database tables created.")
 
-async def main():
-    logging.basicConfig(level=logging.INFO)
-    
-    TOKEN = os.getenv("BOT_TOKEN")
-    if not TOKEN:
-        raise ValueError("BOT_TOKEN topilmadi!")
-
-    bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot = Bot(
+        token=os.getenv("BOT_TOKEN"),
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     dp = Dispatcher()
 
     # Middlewarelarni ro'yxatdan o'tkazish
@@ -46,24 +44,40 @@ async def main():
     dp.inline_query.middleware(DbSessionMiddleware())
     dp.channel_post.middleware(DbSessionMiddleware())
 
-    # Routerlarni ulash
+    # Routerni ulash
     dp.include_routers(
+        admin.router,
+        sync.router,
         meta.router,
         movies.router,
+        filters.router,
         watchlist.router,
         ratings.router,
         history.router,
-        filters.router,
         notifications.router,
-        inline.router,
-        admin.router,
         recommendations.router,
-        sync.router
+        inline.router
     )
 
-    await on_startup()
     logging.info("Bot is starting...")
-    await dp.start_polling(bot)
+    
+    # Render uchun dummy web server (Free tier uchun port kerak)
+    async def handle(request):
+        return web.Response(text="Bot is running!")
+
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    
+    logging.info(f"Starting web server on port {port}")
+    
+    await asyncio.gather(
+        site.start(),
+        dp.start_polling(bot)
+    )
 
 if __name__ == "__main__":
     try:
