@@ -74,9 +74,29 @@ async def main():
     
     logging.info(f"Starting web server on port {port}")
     
+    # Self-ping funksiyasi (Render uxlab qolmasligi uchun)
+    async def keep_alive():
+        url = os.getenv("RENDER_EXTERNAL_URL")
+        if not url:
+            logging.info("Self-ping: RENDER_EXTERNAL_URL topilmadi, o'tkazib yuborildi.")
+            return
+            
+        import aiohttp
+        logging.info(f"Self-ping task started for: {url}")
+        while True:
+            await asyncio.sleep(600) # Har 10 daqiqada
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            logging.info("Self-ping: Muvaffaqiyatli (200 OK)")
+            except Exception as e:
+                logging.error(f"Self-ping xatolik: {e}")
+
     await asyncio.gather(
         site.start(),
-        dp.start_polling(bot)
+        dp.start_polling(bot),
+        keep_alive()
     )
 
 if __name__ == "__main__":
