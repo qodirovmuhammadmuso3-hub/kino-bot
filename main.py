@@ -11,6 +11,8 @@ from handlers import meta, movies, watchlist, ratings, history, filters, notific
 # Middlewarelar
 from middlewares.db_session import DbSessionMiddleware
 from middlewares.throttling import ThrottlingMiddleware
+from aiohttp import web
+import asyncio
 # DB
 from database.base import engine, Base
 
