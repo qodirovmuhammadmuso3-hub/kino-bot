@@ -19,11 +19,11 @@ class StatsService:
         return result.scalar()
 
     async def get_hourly_activity(self):
-        # Bu PostgreSQL uchun maxsus query
+        # SQLite uchun moslashtirilgan query
         query = text("""
-            SELECT EXTRACT(HOUR FROM viewed_at) as hour, COUNT(*) as count 
+            SELECT strftime('%H', viewed_at) as hour, COUNT(*) as count 
             FROM history 
-            WHERE viewed_at >= NOW() - INTERVAL '24 hours'
+            WHERE viewed_at >= datetime('now', '-24 hours')
             GROUP BY hour ORDER BY hour
         """)
         result = await self.session.execute(query)

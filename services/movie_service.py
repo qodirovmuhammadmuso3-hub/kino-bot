@@ -211,3 +211,11 @@ class MovieService:
         query = select(func.count(Movie.id))
         result = await self.session.execute(query)
         return result.scalar()
+
+    async def delete_movie(self, code: str):
+        movie = await self.get_movie_by_code(code)
+        if movie:
+            await self.session.delete(movie)
+            await self.session.commit()
+            return True
+        return False

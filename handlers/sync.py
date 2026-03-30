@@ -46,7 +46,21 @@ async def sync_movie_handler(post: types.Message, bot: Bot, session: AsyncSessio
     def check_channel(conf_val, c_id, c_un):
         if not conf_val: return False
         conf_str = str(conf_val).lower()
-        return bool(c_id == conf_str or (c_un and c_un.lower() == conf_str))
+        # id|link formatini tekshirish
+        parts = conf_str.split("|")
+        clean_conf = parts[0].strip()
+        
+        # ID yoki username bilan solishtirish
+        if c_id == clean_conf or (c_un and c_un.lower() == clean_conf.lower()):
+            return True
+            
+        # Agar link bo'lsa, link ichidan username'ni tekshirish
+        if "t.me/" in conf_str:
+            link_part = parts[1].strip() if len(parts) > 1 else conf_str
+            link_un = link_part.split("/")[-1].replace("@", "").lower()
+            if c_un and c_un.lower().replace("@", "") == link_un:
+                return True
+        return False
 
     is_trailer = check_channel(TRAILER_CHANNEL_ID, chat_id, chat_username)
     is_movie = check_channel(MOVIE_CHANNEL_ID, chat_id, chat_username)

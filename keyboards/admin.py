@@ -4,7 +4,7 @@ def get_admin_menu():
     kb = [
         [KeyboardButton(text="🎬 Kontent qo'shish"), KeyboardButton(text="🗑 Kontentni o'chirish")],
         [KeyboardButton(text="🛠 Kontentni tahrirlash"), KeyboardButton(text="➕ Admin qo'shish")],
-        [KeyboardButton(text="📊 Kengaytirilgan statistika")],
+        [KeyboardButton(text="👤 Adminlar"), KeyboardButton(text="📊 Kengaytirilgan statistika")],
         [KeyboardButton(text="📣 Kanallar"), KeyboardButton(text="📢 Majburiy obuna")],
         [KeyboardButton(text="📢 Reklama yuborish")],
         [KeyboardButton(text="🔙 Foydalanuvchi menyusi")]

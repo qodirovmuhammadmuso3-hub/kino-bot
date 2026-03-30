@@ -76,3 +76,13 @@ class UserService:
         query = select(User).where(User.user_id == user_id, User.is_admin == True)
         result = await self.session.execute(query)
         return result.scalar_one_or_none() is not None
+
+    async def get_all_admins(self):
+        query = select(User).where(User.is_admin == True)
+        result = await self.session.execute(query)
+        return result.scalars().all()
+
+    async def get_all_user_ids(self):
+        query = select(User.user_id)
+        result = await self.session.execute(query)
+        return result.scalars().all()

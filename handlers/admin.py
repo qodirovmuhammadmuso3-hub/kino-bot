@@ -12,6 +12,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from services.setting_service import SettingService
 from database.models import AdChannel
 import os
+import asyncio
 
 router = Router()
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
@@ -38,6 +39,10 @@ class AdminStates(StatesGroup):
     # Majburiy kanallar
     waiting_for_ad_channel_id = State()
     waiting_for_ad_channel_link = State()
+
+    # Reklama
+    waiting_for_broadcast_message = State()
+    confirm_broadcast = State()
 
 @router.message(Command("admin"))
 async def admin_panel(message: types.Message, session: AsyncSession):
@@ -108,6 +113,245 @@ async def process_add_admin(message: types.Message, state: FSMContext, session: 
         await message.answer("❌ Foydalanuvchi topilmadi. Avval u botga kirgan bo'lishi kerak.")
     await state.clear()
 
+@router.message(F.text == "👤 Adminlar")
+async def list_admins_handler(message: types.Message, session: AsyncSession):
+    user_service = UserService(session)
+    if not await user_service.is_admin(message.from_user.id): return
+    
+    admins = await user_service.get_all_admins()
+    text = "<b>👤 Bot adminlari ro'yxati:</b>\n\n"
+    
+    builder = InlineKeyboardBuilder()
+    for i, admin in enumerate(admins, 1):
+        admin_name = admin.full_name or "Noma'lum"
+        if admin.username:
+            admin_name += f" (@{admin.username})"
+        
+        is_super = admin.user_id == ADMIN_ID
+        text += f"{i}. {admin_name} (<code>{admin.user_id}</code>){' 👑' if is_super else ''}\n"
+        
+        if not is_super and message.from_user.id == ADMIN_ID:
+            builder.button(text=f"🗑 {admin_name}", callback_data=f"remove_admin:{admin.user_id}")
+    
+    builder.adjust(1)
+    await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("remove_admin:"))
+async def process_remove_admin(callback: types.CallbackQuery, session: AsyncSession):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⚠️ Faqat asosiy admin boshqa adminlarni o'chira oladi.", show_alert=True)
+        return
+    
+    target_id = int(callback.data.split(":")[1])
+    user_service = UserService(session)
+    success = await user_service.set_admin(target_id, False)
+    
+    await callback.answer()
+
+# --- Kontent Qo'shish ---
+
+@router.message(F.text == "🎬 Kontent qo'shish")
+async def add_content_start(message: types.Message, state: FSMContext, session: AsyncSession):
+    user_service = UserService(session)
+    if not await user_service.is_admin(message.from_user.id): return
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🎬 Kino", callback_data="add_type:movie")
+    builder.button(text="📺 Anime", callback_data="add_type:anime")
+    builder.adjust(2)
+    
+    await message.answer("Qaysi turdagi kontent qo'shmoqchisiz?", reply_markup=builder.as_markup())
+
+@router.callback_query(F.data.startswith("add_type:"))
+async def process_content_type(callback: types.CallbackQuery, state: FSMContext):
+    content_type = callback.data.split(":")[1]
+    await state.update_data(content_type=content_type)
+    await state.set_state(AdminStates.waiting_for_title)
+    await callback.message.edit_text("🎥 Kontent <b>nomini</b> kiriting:", parse_mode="HTML")
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_title)
+async def process_title(message: types.Message, state: FSMContext, session: AsyncSession):
+    await state.update_data(title=message.text.strip())
+    movie_service = MovieService(session)
+    data = await state.get_data()
+    next_code = await movie_service.get_next_movie_code(data['content_type'])
+    
+    await state.set_state(AdminStates.waiting_for_code)
+    await message.answer(f"🔢 Kontent <b>kodini</b> kiriting (Tavsiya etiladi: <code>{next_code}</code>):", parse_mode="HTML")
+
+@router.message(AdminStates.waiting_for_code)
+async def process_code(message: types.Message, state: FSMContext):
+    await state.update_data(code=message.text.strip())
+    await state.set_state(AdminStates.waiting_for_file)
+    await message.answer("🎞 Kontent <b>faylini</b> (video yoki rasm) yuboring:", parse_mode="HTML")
+
+@router.message(AdminStates.waiting_for_file)
+async def process_file(message: types.Message, state: FSMContext, session: AsyncSession):
+    data = await state.get_data()
+    file_id = ""
+    media_type = "video"
+    
+    if message.video:
+        file_id = message.video.file_id
+        media_type = "video"
+    elif message.photo:
+        file_id = message.photo[-1].file_id
+        media_type = "photo"
+    elif message.document:
+        file_id = message.document.file_id
+        media_type = "document"
+    else:
+        await message.answer("⚠️ Iltimos, video, rasm yoki hujjat yuboring.")
+        return
+
+    movie_service = MovieService(session)
+    new_movie = await movie_service.add_movie(
+        title=data['title'],
+        code=data['code'],
+        content_type=data['content_type'],
+        file_id=file_id,
+        media_type=media_type
+    )
+    
+    await message.answer(f"✅ Kontent muvaffaqiyatli qo'shildi!\nID: {new_movie.id}, Kod: {new_movie.code}")
+    await state.clear()
+
+# --- Kontent Tahrirlash ---
+
+@router.message(F.text == "🛠 Kontentni tahrirlash")
+async def edit_content_start(message: types.Message, state: FSMContext, session: AsyncSession):
+    user_service = UserService(session)
+    if not await user_service.is_admin(message.from_user.id): return
+    await state.set_state(AdminStates.waiting_for_edit_code)
+    await message.answer("📝 Tahrirlanadigan kontent <b>kodini</b> yuboring:", parse_mode="HTML")
+
+@router.message(AdminStates.waiting_for_edit_code)
+async def process_edit_code(message: types.Message, state: FSMContext, session: AsyncSession):
+    code = message.text.strip()
+    movie_service = MovieService(session)
+    movie = await movie_service.get_movie_by_code(code)
+    
+    if not movie:
+        await message.answer(f"❌ '{code}' kodli kontent topilmadi.")
+        await state.clear()
+        return
+
+    await state.update_data(edit_movie_id=movie.id)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Nomi", callback_data="edit_field:title")
+    builder.button(text="Janri", callback_data="edit_field:genre")
+    builder.button(text="Yili", callback_data="edit_field:year")
+    builder.button(text="Tavsifi", callback_data="edit_field:description")
+    builder.adjust(2)
+    
+    await message.answer(f"🎬 <b>{movie.title}</b>\nNimani o'zgartirmoqchisiz?", reply_markup=builder.as_markup(), parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("edit_field:"))
+async def process_edit_field(callback: types.CallbackQuery, state: FSMContext):
+    field = callback.data.split(":")[1]
+    await state.update_data(edit_field=field)
+    await state.set_state(AdminStates.waiting_for_new_value)
+    await callback.message.edit_text(f"✍️ Yangi <b>{field}</b> qiymatini yuboring:", parse_mode="HTML")
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_new_value)
+async def save_edit_value(message: types.Message, state: FSMContext, session: AsyncSession):
+    data = await state.get_data()
+    movie_id = data['edit_movie_id']
+    field = data['edit_field']
+    val = message.text.strip()
+    
+    movie_service = MovieService(session)
+    await movie_service.update_movie(movie_id, **{field: val})
+    
+    await message.answer(f"✅ Ma'lumot yangilandi: <b>{field}</b>", parse_mode="HTML")
+    await state.clear()
+
+# --- Reklama Yuborish ---
+
+@router.message(F.text == "📢 Reklama yuborish")
+async def broadcast_start(message: types.Message, state: FSMContext, session: AsyncSession):
+    user_service = UserService(session)
+    if not await user_service.is_admin(message.from_user.id): return
+    await state.set_state(AdminStates.waiting_for_broadcast_message)
+    await message.answer("📢 Reklama xabarini yuboring (rasm, video, matn bo'lishi mumkin):")
+
+@router.message(AdminStates.waiting_for_broadcast_message)
+async def confirm_broadcast(message: types.Message, state: FSMContext):
+    await state.update_data(broadcast_msg_id=message.message_id)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Tasdiqlash", callback_data="broadcast_confirm:yes")
+    builder.button(text="❌ Bekor qilish", callback_data="broadcast_confirm:no")
+    await message.answer("Ushbu xabarni hamma foydalanuvchilarga yuborishni tasdiqlaysizmi?", reply_markup=builder.as_markup())
+
+@router.callback_query(F.data.startswith("broadcast_confirm:"))
+async def process_broadcast(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    confirm = callback.data.split(":")[1]
+    if confirm == "no":
+        await callback.message.edit_text("❌ Reklama bekor qilindi.")
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    msg_id = data['broadcast_msg_id']
+    user_service = UserService(session)
+    user_ids = await user_service.get_all_user_ids()
+    
+    await callback.message.edit_text(f"⏳ Reklama {len(user_ids)} kishiga yuborish boshlandi...")
+    
+    count = 0
+    for uid in user_ids:
+        try:
+            await callback.bot.copy_message(chat_id=uid, from_chat_id=callback.from_user.id, message_id=msg_id)
+            count += 1
+            await asyncio.sleep(0.05) # Flood control
+        except:
+            continue
+            
+    await callback.message.answer(f"✅ Reklama {count} kishiga muvaffaqiyatli yuborildi.")
+    await state.clear()
+
+# --- Statistika Callbacks ---
+
+@router.callback_query(F.data == "stats_hourly")
+async def hourly_stats(callback: types.CallbackQuery, session: AsyncSession):
+    stats_service = StatsService(session)
+    data = await stats_service.get_hourly_activity()
+    text = "<b>🕒 Oxirgi 24 soatlik faollik:</b>\n\n"
+    if not data:
+        text += "Ma'lumot yo'q."
+    else:
+        for row in data:
+            # PostgreSQL da row ob'ekt, SQLite da tuple bo'lishi mumkin
+            h, c = (row.hour, row.count) if hasattr(row, 'hour') else (row[0], row[1])
+            text += f"⏰ {int(h):02d}:00 — {c} marta\n"
+    await callback.message.answer(text, parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data == "stats_weekly_top")
+async def weekly_top_stats(callback: types.CallbackQuery, session: AsyncSession):
+    stats_service = StatsService(session)
+    movies = await stats_service.get_weekly_top_movies()
+    text = "<b>📅 Haftalik TOP-5 kinolar:</b>\n\n"
+    if not movies:
+        text += "Ma'lumot yo'q."
+    else:
+        for i, m in enumerate(movies, 1):
+            # SQLAlchemy result row handling
+            movie = m[0]
+            views = m[1]
+            text += f"{i}. {movie.title} — {views} marta\n"
+    await callback.message.answer(text, parse_mode="HTML")
+    await callback.answer()
+
+# --- Orqaga ---
+
+@router.message(F.text == "🔙 Foydalanuvchi menyusi")
+async def back_to_user(message: types.Message, session: AsyncSession):
+    from keyboards.general import get_main_menu
+    await message.answer("🏠 Asosiy menyudasiz.", reply_markup=get_main_menu())
+
 # --- Kanallar Sozlamalari ---
 
 @router.message(F.text == "📣 Kanallar")
@@ -138,8 +382,37 @@ async def process_set_channel(callback: types.CallbackQuery, state: FSMContext):
     channel_key = callback.data.split(":")[1]
     await state.update_data(channel_key=channel_key)
     await state.set_state(AdminStates.waiting_for_channel_value)
-    names = {"movie_channel": "Kino kanali", "anime_channel": "Anime kanali", "trailer_channel": "Treyler kanali"}
-    await callback.message.edit_text(f"✍️ <b>{names[channel_key]}</b> uchun yangi qiymatni kiriting.\nFormat: <code>ID|LINK</code>", parse_mode="HTML")
+    
+    names = {"movie_channel": "🎬 Kino kanali", "anime_channel": "📺 Anime kanali", "trailer_channel": "🎞 Treyler kanali"}
+    
+    text = (
+        f"✍️ <b>{names[channel_key]}</b> uchun yangi qiymatni kiriting.\n\n"
+        "💡 <b>ID-ni qanday olish mumkin?</b>\n"
+        "1. Kanalizdan xabarni @userinfobot-ga yuboring.\n"
+        "2. Yoki uning @username'ini kiriting.\n\n"
+        "<b>Format:</b> <code>ID|LINK</code> yoki <code>@username|LINK</code>"
+    )
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🗑 Sozlamani o'chirish", callback_data=f"clear_ch:{channel_key}")
+    builder.button(text="❌ Bekor qilish", callback_data="cancel_edit")
+    builder.adjust(1)
+    
+    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("clear_ch:"))
+async def clear_channel_setting(callback: types.CallbackQuery, session: AsyncSession):
+    key = callback.data.split(":")[1]
+    setting_service = SettingService(session)
+    await setting_service.set_setting(key, "")
+    await callback.message.edit_text(f"✅ <b>{key}</b> sozlamasi muvaffaqiyatli tozalandi.", parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data == "cancel_edit")
+async def cancel_edit(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("❌ Tahrirlash bekor qilindi.")
     await callback.answer()
 
 @router.message(AdminStates.waiting_for_channel_value)
@@ -180,18 +453,24 @@ async def mandatory_subs_manager(message: types.Message, session: AsyncSession):
 @router.callback_query(F.data == "add_ad_channel")
 async def add_ad_channel_start(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_for_ad_channel_id)
-    await callback.message.answer("🆔 Kanal <b>ID</b> sini yuboring (-100...):", parse_mode="HTML")
+    text = (
+        "🆔 Kanal <b>ID</b> sini yuboring (-100...) yoki uning <b>@username</b>ini.\n\n"
+        "💡 ID-ni olish uchun kanaldan xabarni @userinfobot-ga yuboring."
+    )
+    await callback.message.answer(text, parse_mode="HTML")
     await callback.answer()
 
 @router.message(AdminStates.waiting_for_ad_channel_id)
 async def process_ad_channel_id(message: types.Message, state: FSMContext):
-    try:
-        ch_id = int(message.text.strip())
-        await state.update_data(ad_channel_id=ch_id)
-        await state.set_state(AdminStates.waiting_for_ad_channel_link)
-        await message.answer("🔗 Kanal <b>linkini</b> yuboring (https://t.me/...):", parse_mode="HTML")
-    except ValueError:
-        await message.answer("⚠️ ID faqat raqam bo'lishi kerak.")
+    ch_id_str = message.text.strip()
+    # ID yoki @username ekanligini tekshirish
+    if not (ch_id_str.startswith("-100") or ch_id_str.startswith("@")):
+        await message.answer("⚠️ Iltimos, kanal ID'sini (-100- bilan boshlanadigan) yoki @username'ini yuboring.")
+        return
+        
+    await state.update_data(ad_channel_id=ch_id_str)
+    await state.set_state(AdminStates.waiting_for_ad_channel_link)
+    await message.answer("🔗 Kanal <b>linkini</b> yuboring (https://t.me/...):", parse_mode="HTML")
 
 @router.message(AdminStates.waiting_for_ad_channel_link)
 async def process_ad_channel_link(message: types.Message, state: FSMContext, session: AsyncSession):
