@@ -54,10 +54,13 @@ async def anime_search_handler(message: types.Message, state: FSMContext, sessio
     query = message.text.strip()
     await process_movie_search(query, message, state, session, content_type="anime")
 
-@router.message(F.text.regexp(r'^\d+$'))
+@router.message(F.text.regexp(r'^(?i)(kod|id|🆔)?\s*\d+$'))
 async def direct_code_handler(message: types.Message, session: AsyncSession):
     query = message.text.strip()
-    await process_movie_search(query, message, None, session)
+    # "kod 123" -> "123"
+    import re
+    clean_query = re.sub(r'^(?i)(kod|id|🆔)\s*', '', query)
+    await process_movie_search(clean_query, message, None, session)
 
 @router.message(F.text == "🔥 Yangi kinolar")
 async def new_movies_handler(message: types.Message, session: AsyncSession):
@@ -159,7 +162,8 @@ async def process_movie_search(query: str, message: types.Message, state: FSMCon
         results = [m for m in results if m.content_type == content_type]
         
     if not results:
-        if state: # Faqat qidirish holatida bo'lsa javob beramiz (tasodifiy raqamlarga xalaqit bermaslik uchun)
+        # Agar so'rov kodga o'xshasa (faqat raqam) yoki state bo'lsa javob beramiz
+        if state or query.isdigit():
             await message.answer("😔 Uzr, bunday kino topilmadi.")
         return
 

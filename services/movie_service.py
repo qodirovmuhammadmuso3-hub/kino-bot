@@ -10,7 +10,9 @@ class MovieService:
     async def get_movie_by_code(self, code: str):
         # Kodni tozalash
         search_code = str(code).strip()
-        
+        if not search_code:
+            return None
+            
         # 1. Avval original kod bilan qidirish
         query = select(Movie).where(Movie.code == search_code)
         result = await self.session.execute(query)
@@ -19,12 +21,23 @@ class MovieService:
         if movie:
             return movie
             
-        # 2. Agar topilmasa va raqam bo'lsa, padding bilan qidirish (001, 002...)
-        if search_code.isdigit() and len(search_code) < 3:
-            padded_code = search_code.zfill(3)
-            query = select(Movie).where(Movie.code == padded_code)
-            result = await self.session.execute(query)
-            return result.scalar_one_or_none()
+        # 2. Agar topilmasa va raqam bo'lsa, har xil paddinglarni sinab ko'ramiz
+        if search_code.isdigit():
+            # Agar foydalanuvchi "1" deb yozsa va bazada "001" bo'lsa
+            if len(search_code) < 3:
+                padded_code = search_code.zfill(3)
+                query = select(Movie).where(Movie.code == padded_code)
+                result = await self.session.execute(query)
+                movie = result.scalar_one_or_none()
+                if movie: return movie
+            
+            # Agar foydalanuvchi "001" deb yozsa va bazada "1" bo'lsa
+            unpadded_code = str(int(search_code))
+            if unpadded_code != search_code:
+                query = select(Movie).where(Movie.code == unpadded_code)
+                result = await self.session.execute(query)
+                movie = result.scalar_one_or_none()
+                if movie: return movie
             
         return None
 

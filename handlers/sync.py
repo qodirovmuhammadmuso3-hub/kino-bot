@@ -84,18 +84,29 @@ async def sync_movie_handler(post: types.Message, bot: Bot, session: AsyncSessio
     elif post.document: media_type = "document"
 
     code = None
-    
+
     # 1. Matndan kodni qidirish (Trailer uchun o'qimasdan o'tamiz - Foydalanuvchi talabi)
     if not is_trailer:
-        clean_text = re.sub(r'(?:qismlar|yili|davomiyligi|sifat|tel)[\s:]*\d+', '', msg_text, flags=re.IGNORECASE)
-        clean_text = re.sub(r'\d+\s*[- ]?qism', '', clean_text, flags=re.IGNORECASE)
+        # Explicit kodlarni qidirish: "🆔 123", "Kod: 123", "id123"
+        code_match = re.search(r'(?:kod|🆔|id|🆔 kodi)[\s:]*(\d+)', msg_text, re.IGNORECASE)
         
-        code_match = re.search(r'(?:kod|🆔|id)[\s:]*(\d+)', clean_text, re.IGNORECASE)
         if not code_match:
-            code_match = re.search(r'\b\d+\b', clean_text)
+            # Agar explicit kod bo'lmasa, matndagi alohida turgan raqamlarni qidiramiz
+            # Lekin yil (19XX, 20XX) yoki tel raqamlarni chetlab o'tishga harakat qilamiz
+            clean_text = re.sub(r'(?:yili|yil|sifat|tel|davomiyligi)[\s:]*\d+', '', msg_text, flags=re.IGNORECASE)
+            clean_text = re.sub(r'\d+\s*[- ]?qism', '', clean_text, flags=re.IGNORECASE)
+            # 1900-2100 oraliqdagi yillarni kod deb hisoblamaslik uchun:
+            # Bunda faqat 1-5 xonali raqamlarni qidiramiz (yillar odatda 4 xona)
+            potentials = re.findall(r'\b\d{1,5}\b', clean_text)
+            for p in potentials:
+                if not (1900 <= int(p) <= 2100): # Agar yilga o'xshamasa
+                    code = p
+                    break
+        else:
+            code = code_match.group(1)
             
-        if code_match:
-            code = code_match.group(1) if len(code_match.groups()) > 0 else code_match.group(0)
+        if code:
+            code = code.strip()
             logging.info(f"KOD TOPILDI: {code} (Turi: {content_type})")
             
             movie = await movie_service.get_movie_by_code(code)
