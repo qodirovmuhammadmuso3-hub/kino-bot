@@ -152,10 +152,24 @@ async def sync_movie_handler(post: types.Message, bot: Bot, session: AsyncSessio
             new_caption += f"\n\n🆔 <b>Kodi: {code}</b>"
             
         try:
-            if post.caption:
-                await bot.edit_message_caption(chat_id=post.chat.id, message_id=post.message_id, caption=new_caption, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+            # Media (video/photo/document) bo'lsa, edit_message_caption ishlaydi
+            if post.video or post.photo or post.document:
+                await bot.edit_message_caption(
+                    chat_id=post.chat.id, 
+                    message_id=post.message_id, 
+                    caption=new_caption, 
+                    reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), 
+                    parse_mode="HTML"
+                )
             else:
-                await bot.edit_message_reply_markup(chat_id=post.chat.id, message_id=post.message_id, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+                # Agar faqat matn bo'lsa
+                await bot.edit_message_text(
+                    chat_id=post.chat.id, 
+                    message_id=post.message_id, 
+                    text=new_caption, 
+                    reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), 
+                    parse_mode="HTML"
+                )
             logging.info(f"POST YANGILANDI: {code}")
         except Exception as e:
             logging.error(f"Postni tahrirlashda xato: {e}")
