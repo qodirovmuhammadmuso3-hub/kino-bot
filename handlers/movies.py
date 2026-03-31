@@ -54,7 +54,7 @@ async def anime_search_handler(message: types.Message, state: FSMContext, sessio
     query = message.text.strip()
     await process_movie_search(query, message, state, session, content_type="anime")
 
-@router.message(F.text.regexp(r'(?i)^(kod|id|🆔|🆔 kodi)[\s:]*\d+$'))
+@router.message(F.text.regexp(r'(?i)^((kod|id|🆔|🆔 kodi)[\s:]*)?\d+$'))
 async def direct_code_handler(message: types.Message, session: AsyncSession):
     query = message.text.strip()
     # "kod: 123" -> "123"
