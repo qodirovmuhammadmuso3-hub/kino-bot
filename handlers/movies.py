@@ -202,6 +202,8 @@ async def send_movie_view(message: types.Message, movie, session: AsyncSession):
     
     if movie.media_type == "photo":
         await message.answer_photo(movie.file_id, caption=text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    elif movie.media_type == "document":
+        await message.answer_document(movie.file_id, caption=text, reply_markup=builder.as_markup(), parse_mode="HTML")
     else:
         await message.answer_video(movie.file_id, caption=text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
