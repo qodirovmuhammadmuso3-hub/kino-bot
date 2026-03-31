@@ -1,4 +1,5 @@
 from aiogram import Router, types, F
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,12 +55,12 @@ async def anime_search_handler(message: types.Message, state: FSMContext, sessio
     query = message.text.strip()
     await process_movie_search(query, message, state, session, content_type="anime")
 
-@router.message(F.text.regexp(r'(?i)^((kod|id|🆔|🆔 kodi)[\s:]*)?\d+$'))
+@router.message(F.text.regexp(r'(?i)^((kod|id|🆔|🆔 kodi|#)[\s:]*)?\d+$'))
 async def direct_code_handler(message: types.Message, session: AsyncSession):
+    """Kod orqali to'g'ridan-to'g'ri qidirish (regex: #123, kod: 123, 123)."""
     query = message.text.strip()
-    # "kod: 123" -> "123"
     import re
-    clean_query = re.sub(r'(?i)^(kod|id|🆔|🆔 kodi)[\s:]*', '', query)
+    clean_query = re.sub(r'(?i)^(kod|id|🆔|🆔 kodi|#)[\s:]*', '', query)
     await process_movie_search(clean_query, message, None, session)
 
 @router.message(F.text == "🔥 Yangi kinolar")
@@ -90,61 +91,7 @@ async def send_movie_list(message: types.Message, title: str, results):
     builder.adjust(5)
     await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-@router.message(F.text == "📂 Bo'limlar")
-async def categories_handler(message: types.Message):
-    await message.answer("📂 <b>Bo'limlardan birini tanlang:</b>", reply_markup=get_categories_keyboard(), parse_mode="HTML")
-
-@router.callback_query(F.data == "show_genres")
-async def show_genres_callback(callback: types.CallbackQuery, session: AsyncSession):
-    movie_service = MovieService(session)
-    genres = await movie_service.get_genres()
-    if not genres:
-        await callback.answer("Hali janrlar qo'shilmagan.", show_alert=True)
-        return
-    await callback.message.edit_text("🎭 <b>Janrni tanlang:</b>", reply_markup=get_genres_keyboard(genres), parse_mode="HTML")
-    await callback.answer()
-
-@router.callback_query(F.data == "show_years")
-async def show_years_callback(callback: types.CallbackQuery):
-    await callback.message.edit_text("📅 <b>Yilni tanlang:</b>", reply_markup=get_years_keyboard(), parse_mode="HTML")
-    await callback.answer()
-
-@router.callback_query(F.data == "show_langs")
-async def show_langs_callback(callback: types.CallbackQuery):
-    await callback.message.edit_text("🌍 <b>Tilni tanlang:</b>", reply_markup=get_langs_keyboard(), parse_mode="HTML")
-    await callback.answer()
-
-@router.callback_query(F.data == "back_to_categories")
-async def back_to_categories_callback(callback: types.CallbackQuery):
-    await callback.message.edit_text("📂 <b>Bo'limlardan birini tanlang:</b>", reply_markup=get_categories_keyboard(), parse_mode="HTML")
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("filter_genre:"))
-async def filter_genre_callback(callback: types.CallbackQuery, session: AsyncSession):
-    genre = callback.data.split(":")[1]
-    movie_service = MovieService(session)
-    results = await movie_service.get_movies_by_genre(genre)
-    await send_movie_list(callback.message, f"🎭 <b>'{genre}' janridagi kinolar:</b>", results)
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("filter_year:"))
-async def filter_year_callback(callback: types.CallbackQuery, session: AsyncSession):
-    year = int(callback.data.split(":")[1])
-    movie_service = MovieService(session)
-    from sqlalchemy import select
-    stmt = select(Movie).where(Movie.year == year).limit(10)
-    res = await session.execute(stmt)
-    results = res.scalars().all()
-    await send_movie_list(callback.message, f"📅 <b>{year}-yil kinolari:</b>", results)
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("filter_lang:"))
-async def filter_lang_callback(callback: types.CallbackQuery, session: AsyncSession):
-    lang = callback.data.split(":")[1]
-    movie_service = MovieService(session)
-    results = await movie_service.get_movies_by_lang(lang)
-    await send_movie_list(callback.message, f"🌍 <b>Til bo'yicha natijalar:</b>", results)
-    await callback.answer()
+# Bo'limlar handlerlari filters.py fayliga ko'chirildi (dublikatni yo'qotish uchun)
 
 async def process_movie_search(query: str, message: types.Message, state: FSMContext | None, session: AsyncSession, content_type=None):
     movie_service = MovieService(session)
@@ -199,6 +146,18 @@ async def send_movie_view(message: types.Message, movie, session: AsyncSession):
         builder.button(text="🔔 Obuna bo'lish", callback_data=f"sub_series:{movie.id}")
 
     builder.adjust(1)
+    
+    # "Bizning kanal" tugmasini qo'shish
+    try:
+        from services.setting_service import SettingService
+        import os
+        setting_service = SettingService(session)
+        t_raw = await setting_service.get_setting("trailer_channel", os.getenv("TRAILER_CHANNEL", ""))
+        if t_raw and "|" in t_raw:
+            trailer_link = t_raw.split("|")[1].strip()
+            builder.row(types.InlineKeyboardButton(text="🎞 Bizning kanal", url=trailer_link))
+    except Exception as e:
+        logging.error(f"Trailer link qo'shishda xato: {e}")
     
     if movie.media_type == "photo":
         await message.answer_photo(movie.file_id, caption=text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -280,3 +239,12 @@ async def play_episode_callback(callback: types.CallbackQuery, session: AsyncSes
         await callback.answer()
     else:
         await callback.answer("😔 Uzr, qism topilmadi.", show_alert=True)
+
+@router.message(F.text)
+async def universal_search_handler(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Barcha matnli xabarlarni qidiruv so'rovi deb hisoblash (Universal Search)."""
+    if message.text.startswith('/'): return
+    query = message.text.strip()
+    # 1 xonali raqamli kodlarni ham qidirishga ruxsat beramiz
+    if len(query) < 2 and not query.isdigit(): return
+    await process_movie_search(query, message, state, session)

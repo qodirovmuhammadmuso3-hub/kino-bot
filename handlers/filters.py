@@ -59,3 +59,36 @@ async def by_genre_handler(callback: types.CallbackQuery, session: AsyncSession)
     builder.attach(InlineKeyboardBuilder.from_markup(nav_kb))
     
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+@router.callback_query(F.data == "back_to_cats")
+async def back_to_cats_handler(callback: types.CallbackQuery):
+    """Bo'limlar menyusiga qaytish."""
+    await categories_handler(callback.message)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("by_lang:"))
+async def by_lang_handler(callback: types.CallbackQuery, session: AsyncSession):
+    """Til bo'yicha filtrlash."""
+    parts = callback.data.split(":")
+    lang = parts[1]
+    page = int(parts[2])
+    
+    movie_service = MovieService(session)
+    movies = await movie_service.get_movies_by_lang(lang, limit=10, offset=page*10)
+    
+    if not movies:
+        await callback.answer("Bu tilda kinolar topilmadi.")
+        return
+        
+    text = f"🌍 <b>Til: {lang.upper()}</b> (Sahifa: {page+1}):\n\n"
+    builder = InlineKeyboardBuilder()
+    for i, m in enumerate(movies, 1):
+        text += f"{i}. {m.title} (<code>{m.code}</code>)\n"
+        builder.button(text=f"{i}", callback_data=f"view_movie:{m.code}")
+    
+    builder.adjust(5)
+    from keyboards.pagination import get_pagination_keyboard
+    nav_kb = get_pagination_keyboard(movies, page, 5, f"by_lang:{lang}")
+    builder.attach(InlineKeyboardBuilder.from_markup(nav_kb))
+    
+    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")

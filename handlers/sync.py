@@ -26,6 +26,7 @@ def parse_episode(text, raw_title):
     return is_series, episode_number, title
 
 @router.channel_post()
+@router.edited_channel_post()
 async def sync_movie_handler(post: types.Message, bot: Bot, session: AsyncSession):
     setting_service = SettingService(session)
     movie_service = MovieService(session)
@@ -44,21 +45,29 @@ async def sync_movie_handler(post: types.Message, bot: Bot, session: AsyncSessio
     chat_username = f"@{post.chat.username}" if post.chat.username else None
     
     def check_channel(conf_val, c_id, c_un):
+        """Kanalni ID yoki Username orqali tekshirish (robust)."""
         if not conf_val: return False
         conf_str = str(conf_val).lower()
-        # id|link formatini tekshirish
         parts = conf_str.split("|")
-        clean_conf = parts[0].strip()
+        clean_conf = parts[0].strip().lower()
         
-        # ID yoki username bilan solishtirish
-        if c_id == clean_conf or (c_un and c_un.lower() == clean_conf.lower()):
+        # 1. To'g'ridan-to'g'ri ID solishtirish ( -100 prefix bilan yoki usiz)
+        curr_id = str(c_id).lower()
+        if curr_id == clean_conf or curr_id.replace("-100", "") == clean_conf.replace("-100", ""):
             return True
             
-        # Agar link bo'lsa, link ichidan username'ni tekshirish
+        # 2. Username solishtirish
+        if c_un:
+            curr_un = c_un.lower().replace("@", "")
+            clean_un = clean_conf.replace("@", "")
+            if curr_un == clean_un:
+                return True
+                
+        # 3. Link ichidan tekshirish
         if "t.me/" in conf_str:
-            link_part = parts[1].strip() if len(parts) > 1 else conf_str
-            link_un = link_part.split("/")[-1].replace("@", "").lower()
-            if c_un and c_un.lower().replace("@", "") == link_un:
+            link_part = parts[1].strip().lower() if len(parts) > 1 else conf_str
+            link_un = link_part.split("/")[-1].replace("@", "")
+            if c_un and curr_un == link_un:
                 return True
         return False
 
@@ -85,50 +94,59 @@ async def sync_movie_handler(post: types.Message, bot: Bot, session: AsyncSessio
 
     code = None
 
-    # 1. Matndan kodni qidirish (Trailer uchun o'qimasdan o'tamiz - Foydalanuvchi talabi)
-    if not is_trailer:
-        # Explicit kodlarni qidirish: "🆔 123", "Kod: 123", "id123"
-        code_match = re.search(r'(?:kod|🆔|id|🆔 kodi)[\s:]*(\d+)', msg_text, re.IGNORECASE)
+    # 1. Matndan kodni qidirish (Sarlavha bo'yicha bog'lash logic)
+    if is_trailer:
+        # Treyler uchun matndan kod qidirmaymiz (Foydalanuvchi talabi)
+        # Sarlavhani (birinchi qatorni) olamiz
+        lines = msg_text.split('\n') if msg_text else []
+        title_from_msg = lines[0].strip() if lines else ""
+        
+        # O'sha nomli kinoni (Movie/Anime) qidiramiz
+        movie_match = await movie_service.get_movie_by_title(title_from_msg, ["movie", "anime"])
+        if movie_match:
+            code = movie_match.code
+            logging.info(f"TREYLER UCHUN KINO TOPILDI (Sarlavha orqali): {code}")
+    else:
+        # Kodni qidirish: "🆔 123", "Kod: 123", "id 123", "#123"
+        code_match = re.search(r'(?:kod|🆔|id|🆔 kodi|#)[\s:]*(\d+)', msg_text, re.IGNORECASE)
         
         if not code_match:
-            # Agar explicit kod bo'lmasa, matndagi alohida turgan raqamlarni qidiramiz
-            # Lekin yil (19XX, 20XX) yoki tel raqamlarni chetlab o'tishga harakat qilamiz
-            clean_text = re.sub(r'(?:yili|yil|sifat|tel|davomiyligi)[\s:]*\d+', '', msg_text, flags=re.IGNORECASE)
+            # Agar belgi bo'lmasa, raqamlarni yil emasligini tekshirib qidiramiz
+            clean_text = re.sub(r'(?:yili|yil|sifat|tel|davomiyligi|tel|nomer)[\s:]*\d+', '', msg_text, flags=re.IGNORECASE)
             clean_text = re.sub(r'\d+\s*[- ]?qism', '', clean_text, flags=re.IGNORECASE)
-            # 1900-2100 oraliqdagi yillarni kod deb hisoblamaslik uchun:
-            # Bunda faqat 1-5 xonali raqamlarni qidiramiz (yillar odatda 4 xona)
             potentials = re.findall(r'\b\d{1,5}\b', clean_text)
             for p in potentials:
-                if not (1900 <= int(p) <= 2100): # Agar yilga o'xshamasa
+                if not (1900 <= int(p) <= 2100):
                     code = p
                     break
         else:
             code = code_match.group(1)
-            
-        if code:
-            code = code.strip()
-            logging.info(f"KOD TOPILDI: {code} (Turi: {content_type})")
-            
-            movie = await movie_service.get_movie_by_code(code)
-            if movie:
-                # O'ZGARTIRILSIN (YANGI MATN VA FAYLGA)
-                if media:
-                    update_data = {"file_id": media.file_id, "media_type": media_type, "description": msg_text}
-                    lines = msg_text.split('\n') if msg_text else []
-                    raw_title = lines[0][:50] if lines else movie.title
-                    is_ser, ep_num, new_title = parse_episode(msg_text, raw_title)
-                    update_data["title"] = new_title or raw_title
-                    update_data["is_series"] = is_ser
-                    
-                    await movie_service.update_movie_by_code(code, **update_data)
-                    logging.info(f"YANGILANDI (OVERWRITE): {code}")
-            else:
-                if media:
-                    lines = msg_text.split('\n') if msg_text else []
-                    raw_title = lines[0][:50] if lines else "Noma'lum"
-                    is_series, ep_num, title = parse_episode(msg_text, raw_title)
-                    await movie_service.add_movie(code=code, title=title, file_id=media.file_id, content_type=content_type, media_type=media_type, is_series=is_series, description=msg_text)
-                    logging.info(f"YANGI QO'SHILDI: {code}")
+        
+    if code:
+        code = code.strip()
+        logging.info(f"KOD TOPILDI: {code} (Turi: {content_type})")
+        
+        movie = await movie_service.get_movie_by_code(code)
+        if movie and movie.content_type == content_type:
+            # FAQAT BIR XIL TURDAGI KONTENTNI YANGILAYMIZ
+            if media:
+                update_data = {"file_id": media.file_id, "media_type": media_type, "description": msg_text}
+                lines = msg_text.split('\n') if msg_text else []
+                raw_title = lines[0][:50] if lines else movie.title
+                is_ser, ep_num, new_title = parse_episode(msg_text, raw_title)
+                update_data["title"] = new_title or raw_title
+                update_data["is_series"] = is_ser
+                
+                await movie_service.update_movie_by_code(code, **update_data)
+                logging.info(f"YANGILANDI (OVERWRITE): {code}")
+        elif not movie:
+            # YANGI QO'SHILDI
+            if media:
+                lines = msg_text.split('\n') if msg_text else []
+                raw_title = lines[0][:50] if lines else "Noma'lum"
+                is_series, ep_num, title = parse_episode(msg_text, raw_title)
+                await movie_service.add_movie(code=code, title=title, file_id=media.file_id, content_type=content_type, media_type=media_type, is_series=is_series, description=msg_text)
+                logging.info(f"YANGI QO'SHILDI: {code}")
 
     # 2. Avtomatik kod berish (Matnda kod topilmasa yoki Trailer kanali bo'lsa)
     if not code and media:

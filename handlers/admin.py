@@ -1,5 +1,5 @@
 from aiogram import Router, types, F
-from aiogram.filters import Command
+# CommandStart import qilindi
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,8 @@ from services.setting_service import SettingService
 from database.models import AdChannel, SupportTicket, User
 import os
 import asyncio
+import logging
+from aiogram.filters import Command, CommandStart
 
 router = Router()
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
@@ -47,11 +49,23 @@ class AdminStates(StatesGroup):
     # Murojaatga javob
     waiting_for_reply_text = State()
 
+@router.message(CommandStart())
+async def start_cmd_handler(message: types.Message, state: FSMContext, session: AsyncSession):
+    """/start buyrug'i kelganda state'ni tozalash va start_handler'ga o'tkazish."""
+    current_state = await state.get_state()
+    if current_state:
+        await state.clear()
+        logging.info(f"FSM State tozalandi (/start): {current_state}")
+    
+    from handlers.meta import start_handler
+    return await start_handler(message, session)
+
 @router.message(Command("admin"))
-async def admin_panel(message: types.Message, session: AsyncSession):
+async def admin_panel(message: types.Message, state: FSMContext, session: AsyncSession):
     user_service = UserService(session)
     if not await user_service.is_admin(message.from_user.id):
         return
+    await state.clear() # Har safar kirganda state tozalanadi
     await message.answer("🛠 <b>Admin Paneliga xush kelibsiz!</b>", reply_markup=get_admin_menu(), parse_mode="HTML")
 
 @router.message(F.text == "📊 Kengaytirilgan statistika")
@@ -189,8 +203,25 @@ async def process_code(message: types.Message, state: FSMContext):
     await state.set_state(AdminStates.waiting_for_file)
     await message.answer("🎞 Kontent <b>faylini</b> (video yoki rasm) yuboring:", parse_mode="HTML")
 
+@router.message(F.text == "🔙 Foydalanuvchi menyusi")
+async def back_to_user(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Asosiy menyuga qaytish va barcha statelarni tozalash (FSM)."""
+    from keyboards.general import get_main_menu
+    await state.clear()
+    await message.answer("🏠 Asosiy menyudasiz.", reply_markup=get_main_menu())
+
 @router.message(AdminStates.waiting_for_file)
 async def process_file(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Faylni qabul qilish (video, rasm, hujjat or GIF)."""
+    # Buyruq yoki orqaga tugmasini tekshirish
+    if message.text and (message.text.startswith("/") or message.text == "🔙 Foydalanuvchi menyusi"):
+        await state.clear()
+        if message.text == "/start":
+            from handlers.meta import start_handler
+            return await start_handler(message, session)
+        from keyboards.general import get_main_menu
+        return await message.answer("🏠 Asosiy menyudasiz.", reply_markup=get_main_menu())
+
     data = await state.get_data()
     file_id = ""
     media_type = "video"
@@ -204,6 +235,9 @@ async def process_file(message: types.Message, state: FSMContext, session: Async
     elif message.document:
         file_id = message.document.file_id
         media_type = "document"
+    elif message.animation:
+        file_id = message.animation.file_id
+        media_type = "video"
     else:
         await message.answer("⚠️ Iltimos, video, rasm yoki hujjat yuboring.")
         return
@@ -246,6 +280,7 @@ async def process_edit_code(message: types.Message, state: FSMContext, session: 
     builder.button(text="Janri", callback_data="edit_field:genre")
     builder.button(text="Yili", callback_data="edit_field:year")
     builder.button(text="Tavsifi", callback_data="edit_field:description")
+    builder.button(text="🗑 O'chirish", callback_data=f"delete_content_init:{movie.id}")
     builder.adjust(2)
     
     await message.answer(f"🎬 <b>{movie.title}</b>\nNimani o'zgartirmoqchisiz?", reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -270,6 +305,43 @@ async def save_edit_value(message: types.Message, state: FSMContext, session: As
     
     await message.answer(f"✅ Ma'lumot yangilandi: <b>{field}</b>", parse_mode="HTML")
     await state.clear()
+
+# --- Kontentni O'chirish (Edit Menyudan) ---
+
+@router.callback_query(F.data.startswith("delete_content_init:"))
+async def delete_content_init(callback: types.CallbackQuery, session: AsyncSession):
+    movie_id = int(callback.data.split(":")[1])
+    movie = await session.get(Movie, movie_id)
+    if not movie:
+        await callback.answer("❌ Kontent topilmadi.")
+        return
+        
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Ha, o'chirish", callback_data=f"delete_content_final:{movie_id}")
+    builder.button(text="❌ Yo'q, bekor qilish", callback_data=f"cancel_edit")
+    builder.adjust(1)
+    
+    await callback.message.edit_text(
+        f"❓ <b>{movie.title}</b> (Kod: {movie.code}) ni o'chirishni tasdiqlaysizmi?",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("delete_content_final:"))
+async def delete_content_final(callback: types.CallbackQuery, session: AsyncSession):
+    movie_id = int(callback.data.split(":")[1])
+    movie = await session.get(Movie, movie_id)
+    
+    if movie:
+        code = movie.code
+        await session.delete(movie)
+        await session.commit()
+        await callback.message.edit_text(f"✅ Kontent muvaffaqiyatli o'chirildi (Kod: {code}).")
+    else:
+        await callback.message.edit_text("❌ Kontent allaqachon o'chirilgan yoki topilmadi.")
+    
+    await callback.answer()
 
 # --- Reklama Yuborish ---
 
@@ -350,10 +422,7 @@ async def weekly_top_stats(callback: types.CallbackQuery, session: AsyncSession)
 
 # --- Orqaga ---
 
-@router.message(F.text == "🔙 Foydalanuvchi menyusi")
-async def back_to_user(message: types.Message, session: AsyncSession):
-    from keyboards.general import get_main_menu
-    await message.answer("🏠 Asosiy menyudasiz.", reply_markup=get_main_menu())
+# Handler yuqoriga ko'chirildi (priority uchun)
 
 # --- Kanallar Sozlamalari ---
 

@@ -8,35 +8,43 @@ class MovieService:
         self.session = session
 
     async def get_movie_by_code(self, code: str):
-        # Kodni tozalash
+        """Kodni tozalash va bir necha xil formatda (001, 1) qidirish. 
+        Kino yoki animeni treylerdan ko'ra ustun qo'yadi."""
         search_code = str(code).strip()
-        if not search_code:
-            return None
+        if not search_code: return None
             
-        # 1. Avval original kod bilan qidirish
-        query = select(Movie).where(Movie.code == search_code)
+        # 1. To'g'ridan-to'g'ri qidirish (Movie/Anime'ni birinchi ko'ramiz)
+        from sqlalchemy import case
+        query = select(Movie).where(Movie.code == search_code).order_by(
+            case(
+                { 'movie': 1, 'anime': 1, 'trailer': 2 },
+                value=Movie.content_type
+            )
+        )
         result = await self.session.execute(query)
-        movie = result.scalar_one_or_none()
-        
-        if movie:
-            return movie
+        movie = result.scalars().first()
+        if movie: return movie
             
-        # 2. Agar topilmasa va raqam bo'lsa, har xil paddinglarni sinab ko'ramiz
+        # 2. Raqamli bo'lsa, padding (001) va un-padding (1) bilan qidirish
         if search_code.isdigit():
-            # Agar foydalanuvchi "1" deb yozsa va bazada "001" bo'lsa
-            if len(search_code) < 3:
-                padded_code = search_code.zfill(3)
-                query = select(Movie).where(Movie.code == padded_code)
+            # 1 -> 001
+            padded_code = search_code.zfill(3)
+            if padded_code != search_code:
+                query = select(Movie).where(Movie.code == padded_code).order_by(
+                    case({ 'movie': 1, 'anime': 1, 'trailer': 2 }, value=Movie.content_type)
+                )
                 result = await self.session.execute(query)
-                movie = result.scalar_one_or_none()
+                movie = result.scalars().first()
                 if movie: return movie
             
-            # Agar foydalanuvchi "001" deb yozsa va bazada "1" bo'lsa
+            # 001 -> 1
             unpadded_code = str(int(search_code))
             if unpadded_code != search_code:
-                query = select(Movie).where(Movie.code == unpadded_code)
+                query = select(Movie).where(Movie.code == unpadded_code).order_by(
+                    case({ 'movie': 1, 'anime': 1, 'trailer': 2 }, value=Movie.content_type)
+                )
                 result = await self.session.execute(query)
-                movie = result.scalar_one_or_none()
+                movie = result.scalars().first()
                 if movie: return movie
             
         return None
@@ -51,15 +59,17 @@ class MovieService:
         return movie
 
     async def get_next_movie_code(self, content_type="movie"):
-        # Oxirgi raqamli kodni topish
+        """Keyingi bo'sh kodni hisoblash (Raqamli tartibda)."""
+        # Oxirgi raqamli kodni topish (Lexicographical emas, raqamli tartibda)
+        # Uzunligi va qiymati bo'yicha kamayish tartibida (masalan: 10, 9, 8...)
         query = select(Movie.code).where(
             Movie.content_type == content_type
-        ).order_by(desc(Movie.code)).limit(1)
+        ).order_by(desc(func.length(Movie.code)), desc(Movie.code)).limit(1)
         
         result = await self.session.execute(query)
         last_code_str = result.scalar_one_or_none()
         
-        if not last_code_str or not last_code_str.isdigit():
+        if not last_code_str or not any(char.isdigit() for char in last_code_str):
             return "001" if content_type == "movie" else "1"
             
         last_code = int(last_code_str)
@@ -232,3 +242,19 @@ class MovieService:
             await self.session.commit()
             return True
         return False
+
+    async def get_movie_by_title(self, title: str, content_types=None):
+        """Sarlavha (title) orqali kinoni qidirish. Case-insensitive."""
+        if not title: return None
+        clean_title = title.strip().lower()
+        
+        query = select(Movie).where(func.lower(Movie.title) == clean_title)
+        if content_types:
+            query = query.where(Movie.content_type.in_(content_types))
+            
+        # Movie/Anime birinchi ko'rilsin
+        from sqlalchemy import case
+        query = query.order_by(case({'movie': 1, 'anime': 1, 'trailer': 2}, value=Movie.content_type))
+        
+        result = await self.session.execute(query)
+        return result.scalars().first()
