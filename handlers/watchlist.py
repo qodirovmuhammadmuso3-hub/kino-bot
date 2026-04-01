@@ -9,7 +9,11 @@ router = Router()
 @router.message(F.text == "📌 Watchlist")
 async def show_watchlist(message: types.Message, session: AsyncSession):
     user_service = UserService(session)
-    user = await user_service.get_or_create_user(message.from_user.id, "", "")
+    user = await user_service.get_or_create_user(
+        message.from_user.id, 
+        message.from_user.full_name, 
+        message.from_user.username or ""
+    )
     
     items = await user_service.get_watchlist(user.id)
     if not items:

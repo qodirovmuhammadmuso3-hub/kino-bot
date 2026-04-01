@@ -1,6 +1,7 @@
 aiogram
 python-dotenv
 aiosqlite
+aiomysql
 sqlalchemy
 aiohttp
 cachetools

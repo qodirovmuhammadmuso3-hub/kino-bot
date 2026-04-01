@@ -8,7 +8,11 @@ router = Router()
 @router.message(F.text == "🕒 Tarix")
 async def show_history(message: types.Message, session: AsyncSession):
     user_service = UserService(session)
-    user = await user_service.get_or_create_user(message.from_user.id, "", "")
+    user = await user_service.get_or_create_user(
+        message.from_user.id, 
+        message.from_user.full_name, 
+        message.from_user.username or ""
+    )
     
     # Oxirgi 10 tasi
     history_items = await user_service.get_user_history(user.id, limit=10)

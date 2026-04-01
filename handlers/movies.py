@@ -113,14 +113,17 @@ async def process_movie_search(query: str, message: types.Message, state: FSMCon
     builder.adjust(5)
     await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-async def send_movie_view(message: types.Message, movie, session: AsyncSession):
+async def send_movie_view(message: types.Message, movie, session: AsyncSession, user: types.User = None):
     movie_service = MovieService(session)
     user_service = UserService(session)
     
     # Statistikani oshirish va tarixga qo'shish
     movie.view_count += 1
-    user = await user_service.get_or_create_user(message.from_user.id, "", "")
-    await user_service.add_history(user.id, movie.id)
+    
+    # Userni aniqlash (callbackdan kelgan bo'lsa callback.from_user, aks holda message.from_user)
+    target_user = user or message.from_user
+    db_user = await user_service.get_or_create_user(target_user.id, target_user.full_name, target_user.username or "")
+    await user_service.add_history(db_user.id, movie.id)
     await session.commit()
 
     text = get_movie_text(movie)
@@ -164,7 +167,7 @@ async def process_view_movie_callback(callback: types.CallbackQuery, session: As
     movie = await movie_service.get_movie_by_code(code)
     
     if movie:
-        await send_movie_view(callback.message, movie, session)
+        await send_movie_view(callback.message, movie, session, user=callback.from_user)
         await callback.answer()
     else:
         await callback.answer("😔 Uzr, kino topilmadi.", show_alert=True)
@@ -175,7 +178,7 @@ async def process_view_movie_id_callback(callback: types.CallbackQuery, session:
     movie = await session.get(Movie, movie_id)
     
     if movie:
-        await send_movie_view(callback.message, movie, session)
+        await send_movie_view(callback.message, movie, session, user=callback.from_user)
         await callback.answer()
     else:
         await callback.answer("😔 Uzr, kino topilmadi.", show_alert=True)
@@ -210,7 +213,7 @@ async def subscribe_series(callback: types.CallbackQuery, session: AsyncSession)
     movie_service = MovieService(session)
     user_service = UserService(session)
     
-    user = await user_service.get_or_create_user(callback.from_user.id, "", "")
+    user = await user_service.get_or_create_user(callback.from_user.id, callback.from_user.full_name, callback.from_user.username or "")
     subscribed = await movie_service.subscribe_to_series(user.id, movie_id)
     
     if subscribed:

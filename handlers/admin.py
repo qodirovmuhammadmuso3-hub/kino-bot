@@ -189,8 +189,17 @@ async def process_title(message: types.Message, state: FSMContext, session: Asyn
     await message.answer(f"🔢 Kontent <b>kodini</b> kiriting (Tavsiya etiladi: <code>{next_code}</code>):", parse_mode="HTML")
 
 @router.message(AdminStates.waiting_for_code)
-async def process_code(message: types.Message, state: FSMContext):
-    await state.update_data(code=message.text.strip())
+async def process_code(message: types.Message, state: FSMContext, session: AsyncSession):
+    code = message.text.strip()
+    movie_service = MovieService(session)
+    
+    # Dublikatni tekshirish
+    existing = await movie_service.get_movie_by_code(code)
+    if existing:
+        await message.answer(f"⚠️ <b>'{code}'</b> kodi allaqachon band (<i>{existing.title}</i>).\nIltimos boshqa kod kiriting:", parse_mode="HTML")
+        return
+
+    await state.update_data(code=code)
     await state.set_state(AdminStates.waiting_for_file)
     await message.answer("🎞 Kino <b>faylini</b> (video yoki rasm) yuboring:", parse_mode="HTML")
 
@@ -234,15 +243,19 @@ async def process_file(message: types.Message, state: FSMContext, session: Async
         return
 
     movie_service = MovieService(session)
-    new_movie = await movie_service.add_movie(
-        title=data['title'],
-        code=data['code'],
-        content_type=data['content_type'],
-        file_id=file_id,
-        media_type=media_type
-    )
+    try:
+        new_movie = await movie_service.add_movie(
+            title=data['title'],
+            code=data['code'],
+            content_type=data['content_type'],
+            file_id=file_id,
+            media_type=media_type
+        )
+        await message.answer(f"✅ Kino muvaffaqiyatli qo'shildi!\nID: {new_movie.id}, Kod: {new_movie.code}")
+    except Exception as e:
+        logging.error(f"Kino qo'shishda xato: {e}")
+        await message.answer(f"❌ <b>Bazaga saqlashda xatolik yuz berdi:</b>\n<code>{str(e)}</code>", parse_mode="HTML")
     
-    await message.answer(f"✅ Kino muvaffaqiyatli qo'shildi!\nID: {new_movie.id}, Kod: {new_movie.code}")
     await state.clear()
 
 # --- Kontent Tahrirlash ---

@@ -49,13 +49,13 @@ async def main():
         admin.router,
         sync.router,
         meta.router,
-        movies.router,
         filters.router,
         watchlist.router,
         ratings.router,
         history.router,
         notifications.router,
         recommendations.router,
+        movies.router,
         inline.router
     )
 
