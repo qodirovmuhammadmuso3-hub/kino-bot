@@ -3,7 +3,7 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 # Database URL va sozlamalar
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///bot_database.db")
