@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.orm import joinedload
 from database.models import User, History, Watchlist
 import logging
 
@@ -37,13 +38,13 @@ class UserService:
         await self.session.commit()
 
     async def get_user_history(self, user_db_id: int, limit: int = 10, offset: int = 0):
-        # Oxirgi ko'rilganlar birinchi
-        query = select(History).where(History.user_id == user_db_id).order_by(History.viewed_at.desc()).limit(limit).offset(offset)
+        # Oxirgi ko'rilganlar birinchi, kino ma'lumotlari bilan birga
+        query = select(History).options(joinedload(History.movie)).where(History.user_id == user_db_id).order_by(History.viewed_at.desc()).limit(limit).offset(offset)
         result = await self.session.execute(query)
         return result.scalars().all()
 
     async def get_watchlist(self, user_db_id: int):
-        query = select(Watchlist).where(Watchlist.user_id == user_db_id)
+        query = select(Watchlist).options(joinedload(Watchlist.movie)).where(Watchlist.user_id == user_db_id)
         result = await self.session.execute(query)
         return result.scalars().all()
 

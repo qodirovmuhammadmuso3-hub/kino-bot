@@ -33,7 +33,7 @@ async def start_handler(message: types.Message, session: AsyncSession, command: 
     display_name = message.from_user.mention_html()
     welcome_text = (
         f"👋 <b>Assalomu alaykum, {display_name}!</b>\n\n"
-        "Kino va Anime botimizga xush kelibsiz! Bu yerda siz sevimli kinolaringizni "
+        "Kino botimizga xush kelibsiz! Bu yerda siz sevimli kinolaringizni "
         "qidirishingiz, reyting berishingiz va Watchlist yaratishingiz mumkin."
     )
     await message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode="HTML")

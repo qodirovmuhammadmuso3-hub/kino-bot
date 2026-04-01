@@ -14,7 +14,6 @@ router = Router()
 
 class MovieStates(StatesGroup):
     waiting_for_query = State()
-    waiting_for_anime = State()
 
 def get_movie_text(movie):
     # Agar kanal postidan olingan tavsif bo'lsa, uni ishlatamiz
@@ -45,15 +44,7 @@ async def search_handler(message: types.Message, state: FSMContext, session: Asy
     query = message.text.strip()
     await process_movie_search(query, message, state, session)
 
-@router.message(F.text == "🔍 Anime qidirish")
-async def start_anime_search(message: types.Message, state: FSMContext):
-    await state.set_state(MovieStates.waiting_for_anime)
-    await message.answer("🔍 Qidirilayotgan anime nomi yoki kodini yuboring:")
 
-@router.message(MovieStates.waiting_for_anime)
-async def anime_search_handler(message: types.Message, state: FSMContext, session: AsyncSession):
-    query = message.text.strip()
-    await process_movie_search(query, message, state, session, content_type="anime")
 
 @router.message(F.text.regexp(r'(?i)^((kod|id|🆔|🆔 kodi|#)[\s:]*)?\d+$'))
 async def direct_code_handler(message: types.Message, session: AsyncSession):
@@ -98,15 +89,13 @@ async def process_movie_search(query: str, message: types.Message, state: FSMCon
     
     # 1. Kod bo'yicha qidirish
     movie = await movie_service.get_movie_by_code(query)
-    if movie and (not content_type or movie.content_type == content_type):
+    if movie:
         await send_movie_view(message, movie, session)
         if state: await state.clear()
         return
 
     # 2. Nom bo'yicha qidirish
     results = await movie_service.search_movies(query, limit=10, offset=0)
-    if content_type:
-        results = [m for m in results if m.content_type == content_type]
         
     if not results:
         # Agar so'rov kodga o'xshasa (faqat raqam) yoki state bo'lsa javob beramiz

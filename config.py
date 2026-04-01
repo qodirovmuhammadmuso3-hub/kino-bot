@@ -23,8 +23,5 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 TRAILER_CH_DATA = parse_channel(os.getenv("TRAILER_CHANNEL", ""))
 TRAILER_CHANNEL = TRAILER_CH_DATA["id"]
 
-ANIME_CH_DATA = parse_channel(os.getenv("ANIME_CHANNEL", ""))
-ANIME_CHANNEL = ANIME_CH_DATA["id"]
-
 MOVIE_CH_DATA = parse_channel(os.getenv("MOVIE_CHANNEL", ""))
 MOVIE_CHANNEL = MOVIE_CH_DATA["id"]

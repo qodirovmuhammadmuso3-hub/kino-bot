@@ -88,7 +88,7 @@ async def stats_handler(message: types.Message, session: AsyncSession):
         text += f"{i}. {m.title} — {m.view_count} marta\n"
     await message.answer(text, reply_markup=get_stats_keyboard(), parse_mode="HTML")
 
-@router.message(F.text == "🗑 Kontentni o'chirish")
+@router.message(F.text == "🗑 Kinoni o'chirish")
 async def delete_movie_prompt(message: types.Message, state: FSMContext, session: AsyncSession):
     user_service = UserService(session)
     if not await user_service.is_admin(message.from_user.id): return
@@ -167,25 +167,16 @@ async def process_remove_admin(callback: types.CallbackQuery, session: AsyncSess
 
 # --- Kontent Qo'shish ---
 
-@router.message(F.text == "🎬 Kontent qo'shish")
+@router.message(F.text == "🎬 Kino qo'shish")
 async def add_content_start(message: types.Message, state: FSMContext, session: AsyncSession):
     user_service = UserService(session)
     if not await user_service.is_admin(message.from_user.id): return
     
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🎬 Kino", callback_data="add_type:movie")
-    builder.button(text="📺 Anime", callback_data="add_type:anime")
-    builder.adjust(2)
-    
-    await message.answer("Qaysi turdagi kontent qo'shmoqchisiz?", reply_markup=builder.as_markup())
-
-@router.callback_query(F.data.startswith("add_type:"))
-async def process_content_type(callback: types.CallbackQuery, state: FSMContext):
-    content_type = callback.data.split(":")[1]
-    await state.update_data(content_type=content_type)
+    await state.update_data(content_type="movie")
     await state.set_state(AdminStates.waiting_for_title)
-    await callback.message.edit_text("🎥 Kontent <b>nomini</b> kiriting:", parse_mode="HTML")
-    await callback.answer()
+    await message.answer("🎥 Kino <b>nomini</b> kiriting:", parse_mode="HTML")
+
+# add_type: Callback removed as we skip the choice
 
 @router.message(AdminStates.waiting_for_title)
 async def process_title(message: types.Message, state: FSMContext, session: AsyncSession):
@@ -201,7 +192,7 @@ async def process_title(message: types.Message, state: FSMContext, session: Asyn
 async def process_code(message: types.Message, state: FSMContext):
     await state.update_data(code=message.text.strip())
     await state.set_state(AdminStates.waiting_for_file)
-    await message.answer("🎞 Kontent <b>faylini</b> (video yoki rasm) yuboring:", parse_mode="HTML")
+    await message.answer("🎞 Kino <b>faylini</b> (video yoki rasm) yuboring:", parse_mode="HTML")
 
 @router.message(F.text == "🔙 Foydalanuvchi menyusi")
 async def back_to_user(message: types.Message, state: FSMContext, session: AsyncSession):
@@ -251,17 +242,17 @@ async def process_file(message: types.Message, state: FSMContext, session: Async
         media_type=media_type
     )
     
-    await message.answer(f"✅ Kontent muvaffaqiyatli qo'shildi!\nID: {new_movie.id}, Kod: {new_movie.code}")
+    await message.answer(f"✅ Kino muvaffaqiyatli qo'shildi!\nID: {new_movie.id}, Kod: {new_movie.code}")
     await state.clear()
 
 # --- Kontent Tahrirlash ---
 
-@router.message(F.text == "🛠 Kontentni tahrirlash")
+@router.message(F.text == "🛠 Kinoni tahrirlash")
 async def edit_content_start(message: types.Message, state: FSMContext, session: AsyncSession):
     user_service = UserService(session)
     if not await user_service.is_admin(message.from_user.id): return
     await state.set_state(AdminStates.waiting_for_edit_code)
-    await message.answer("📝 Tahrirlanadigan kontent <b>kodini</b> yuboring:", parse_mode="HTML")
+    await message.answer("📝 Tahrirlanadigan kinoning <b>kodini</b> yuboring:", parse_mode="HTML")
 
 @router.message(AdminStates.waiting_for_edit_code)
 async def process_edit_code(message: types.Message, state: FSMContext, session: AsyncSession):
@@ -270,7 +261,7 @@ async def process_edit_code(message: types.Message, state: FSMContext, session: 
     movie = await movie_service.get_movie_by_code(code)
     
     if not movie:
-        await message.answer(f"❌ '{code}' kodli kontent topilmadi.")
+        await message.answer(f"❌ '{code}' kodli kino topilmadi.")
         await state.clear()
         return
 
@@ -313,7 +304,7 @@ async def delete_content_init(callback: types.CallbackQuery, session: AsyncSessi
     movie_id = int(callback.data.split(":")[1])
     movie = await session.get(Movie, movie_id)
     if not movie:
-        await callback.answer("❌ Kontent topilmadi.")
+        await callback.answer("❌ Kino topilmadi.")
         return
         
     builder = InlineKeyboardBuilder()
@@ -337,9 +328,9 @@ async def delete_content_final(callback: types.CallbackQuery, session: AsyncSess
         code = movie.code
         await session.delete(movie)
         await session.commit()
-        await callback.message.edit_text(f"✅ Kontent muvaffaqiyatli o'chirildi (Kod: {code}).")
+        await callback.message.edit_text(f"✅ Kino muvaffaqiyatli o'chirildi (Kod: {code}).")
     else:
-        await callback.message.edit_text("❌ Kontent allaqachon o'chirilgan yoki topilmadi.")
+        await callback.message.edit_text("❌ Kino allaqachon o'chirilgan yoki topilmadi.")
     
     await callback.answer()
 
@@ -432,19 +423,16 @@ async def channels_settings(message: types.Message, session: AsyncSession):
     if not await user_service.is_admin(message.from_user.id): return
     setting_service = SettingService(session)
     trailer = await setting_service.get_setting("trailer_channel", "Sozlanmagan")
-    anime = await setting_service.get_setting("anime_channel", "Sozlanmagan")
     movie = await setting_service.get_setting("movie_channel", "Sozlanmagan")
     
     text = (
         "<b>📣 Kanal sozlamalari:</b>\n\n"
         f"🎬 <b>Kino:</b> <code>{movie}</code>\n"
-        f"📺 <b>Anime:</b> <code>{anime}</code>\n"
         f"🎞 <b>Treyler:</b> <code>{trailer}</code>\n\n"
         "O'zgartirmoqchi bo'lgan kanalni tanlang:"
     )
     builder = InlineKeyboardBuilder()
     builder.button(text="🎬 Kino kanali", callback_data="set_ch:movie_channel")
-    builder.button(text="📺 Anime kanali", callback_data="set_ch:anime_channel")
     builder.button(text="🎞 Treyler kanali", callback_data="set_ch:trailer_channel")
     builder.adjust(1)
     await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -455,7 +443,7 @@ async def process_set_channel(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(channel_key=channel_key)
     await state.set_state(AdminStates.waiting_for_channel_value)
     
-    names = {"movie_channel": "🎬 Kino kanali", "anime_channel": "📺 Anime kanali", "trailer_channel": "🎞 Treyler kanali"}
+    names = {"movie_channel": "🎬 Kino kanali", "trailer_channel": "🎞 Treyler kanali"}
     
     text = (
         f"✍️ <b>{names[channel_key]}</b> uchun yangi qiymatni kiriting.\n\n"

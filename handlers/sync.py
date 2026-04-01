@@ -33,11 +33,9 @@ async def sync_movie_handler(post: types.Message, bot: Bot, session: AsyncSessio
     
     # DB dan olish yoki config dan (default)
     t_raw = await setting_service.get_setting("trailer_channel", os.getenv("TRAILER_CHANNEL", ""))
-    a_raw = await setting_service.get_setting("anime_channel", os.getenv("ANIME_CHANNEL", ""))
     m_raw = await setting_service.get_setting("movie_channel", os.getenv("MOVIE_CHANNEL", ""))
     
     TRAILER_CHANNEL_ID = parse_channel(t_raw)["id"]
-    ANIME_CHANNEL_ID = parse_channel(a_raw)["id"]
     MOVIE_CHANNEL_ID = parse_channel(m_raw)["id"]
 
     # Kanalni aniqlash va content_type o'rnatish
@@ -73,10 +71,8 @@ async def sync_movie_handler(post: types.Message, bot: Bot, session: AsyncSessio
 
     is_trailer = check_channel(TRAILER_CHANNEL_ID, chat_id, chat_username)
     is_movie = check_channel(MOVIE_CHANNEL_ID, chat_id, chat_username)
-    is_anime = check_channel(ANIME_CHANNEL_ID, chat_id, chat_username)
 
-    if is_anime: content_type = "anime"
-    elif is_trailer: content_type = "trailer"
+    if is_trailer: content_type = "trailer"
     elif is_movie: content_type = "movie"
     else:
         logging.info(f"YOT KANAL: Chat ID={chat_id}, Username={chat_username}, Title={post.chat.title}")
@@ -101,8 +97,8 @@ async def sync_movie_handler(post: types.Message, bot: Bot, session: AsyncSessio
         lines = msg_text.split('\n') if msg_text else []
         title_from_msg = lines[0].strip() if lines else ""
         
-        # O'sha nomli kinoni (Movie/Anime) qidiramiz
-        movie_match = await movie_service.get_movie_by_title(title_from_msg, ["movie", "anime"])
+        # O'sha nomli kinoni qidiramiz
+        movie_match = await movie_service.get_movie_by_title(title_from_msg, ["movie"])
         if movie_match:
             code = movie_match.code
             logging.info(f"TREYLER UCHUN KINO TOPILDI (Sarlavha orqali): {code}")

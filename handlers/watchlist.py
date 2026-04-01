@@ -19,7 +19,6 @@ async def show_watchlist(message: types.Message, session: AsyncSession):
     text = "📌 <b>Siz saqlagan kinolar:</b>\n\n"
     builder = InlineKeyboardBuilder()
     for i, item in enumerate(items, 1):
-        movie = await session.get(item.movie.id) # Lazy loading muammosi bo'lmasligi uchun
         movie = item.movie
         text += f"{i}. {movie.title} (<code>{movie.code}</code>)\n"
         builder.button(text=f"{i}", callback_data=f"view_movie:{movie.code}")

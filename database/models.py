@@ -28,7 +28,7 @@ class Movie(Base):
     lang = Column(String(50), default="uz")
     file_id = Column(String(255), nullable=False)
     media_type = Column(String(50), default="video") # video, photo, document
-    content_type = Column(String(50), default="movie") # movie, anime
+    content_type = Column(String(50), default="movie") # movie, trailer
     is_series = Column(Boolean, default=False)
     view_count = Column(Integer, default=0)
     average_rating = Column(Float, default=0.0)
