@@ -129,15 +129,25 @@ async def send_movie_view(message: types.Message, movie, session: AsyncSession, 
     text = get_movie_text(movie)
     
     builder = InlineKeyboardBuilder()
-    builder.button(text="📌 Watchlist (Saqlash)", callback_data=f"add_watchlist:{movie.id}")
-    builder.button(text="⭐ Baholash", callback_data=f"rate_movie:{movie.id}")
-    builder.button(text="💬 Sharhlar", callback_data=f"view_comments:{movie.id}")
+    
+    # 1. Seryal qismlari (to'g'ridan-to'g'ri) raqamlar bilan
+    if movie.is_series:
+        episodes = await movie_service.get_episodes(movie.id)
+        for e in episodes:
+            builder.button(text=f"{e.episode_number}", callback_data=f"play_ep:{e.id}")
+        
+        # Qismlarni 5 tadan teramiz
+        if episodes:
+            builder.adjust(5)
+
+    # 2. Asosiy tugmalar (Watchlist, Obuna, Baholash)
+    # Reja: Watchlist -> Obuna (seryal) -> Baholash
+    builder.row(types.InlineKeyboardButton(text="📌 Watchlist (Saqlash)", callback_data=f"add_watchlist:{movie.id}"))
     
     if movie.is_series:
-        builder.button(text="📺 Barcha qismlar", callback_data=f"view_episodes:{movie.id}:0")
-        builder.button(text="🔔 Obuna bo'lish", callback_data=f"sub_series:{movie.id}")
-
-    builder.adjust(1)
+        builder.row(types.InlineKeyboardButton(text="🔔 Obuna bo'lish", callback_data=f"sub_series:{movie.id}"))
+    
+    builder.row(types.InlineKeyboardButton(text="⭐ Baholash", callback_data=f"rate_movie:{movie.id}"))
     
     # "Bizning kanal" tugmasini qo'shish
     try:

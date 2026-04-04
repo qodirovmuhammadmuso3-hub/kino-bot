@@ -10,24 +10,31 @@ from services.user_service import UserService
 from keyboards.admin import get_admin_menu, get_stats_keyboard
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from services.setting_service import SettingService
-from database.models import AdChannel, SupportTicket, User
+from database.models import AdChannel, SupportTicket, User, Movie, Episode
 import os
 import asyncio
 import logging
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, CommandObject
+from asyncio import Lock
 
 router = Router()
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+episode_lock = Lock() # Ommaviy yuklashda tartibni saqlash uchun
 
 class AdminStates(StatesGroup):
     waiting_for_new_admin_id = State()
     waiting_for_movie_code_to_delete = State()
+    waiting_for_movie_code_to_add_ep = State()
     
     # Kontent qo'shish
     waiting_for_content_type = State() # movie or series
     waiting_for_title = State()
     waiting_for_code = State()
     waiting_for_file = State()
+    
+    # Seriya qismlari
+    waiting_for_episode_number = State()
+    waiting_for_episode_file = State()
     
     # Tahrirlash
     waiting_for_edit_code = State()
@@ -50,7 +57,7 @@ class AdminStates(StatesGroup):
     waiting_for_reply_text = State()
 
 @router.message(CommandStart())
-async def start_cmd_handler(message: types.Message, state: FSMContext, session: AsyncSession):
+async def start_cmd_handler(message: types.Message, state: FSMContext, session: AsyncSession, command: CommandObject = None):
     """/start buyrug'i kelganda state'ni tozalash va start_handler'ga o'tkazish."""
     current_state = await state.get_state()
     if current_state:
@@ -58,7 +65,7 @@ async def start_cmd_handler(message: types.Message, state: FSMContext, session: 
         logging.info(f"FSM State tozalandi (/start): {current_state}")
     
     from handlers.meta import start_handler
-    return await start_handler(message, session)
+    return await start_handler(message, session, state, command)
 
 @router.message(Command("admin"))
 async def admin_panel(message: types.Message, state: FSMContext, session: AsyncSession):
@@ -165,6 +172,40 @@ async def process_remove_admin(callback: types.CallbackQuery, session: AsyncSess
     
     await callback.answer()
 
+@router.message(F.text == "🎞 Seryalga qism qo'shish")
+async def add_episode_start(message: types.Message, state: FSMContext, session: AsyncSession):
+    user_service = UserService(session)
+    if not await user_service.is_admin(message.from_user.id): return
+    await state.set_state(AdminStates.waiting_for_movie_code_to_add_ep)
+    await message.answer("📝 Qism qo'shiladigan seryalning <b>kodini</b> yuboring:", parse_mode="HTML")
+
+@router.message(AdminStates.waiting_for_movie_code_to_add_ep)
+async def process_code_for_new_ep(message: types.Message, state: FSMContext, session: AsyncSession):
+    code = message.text.strip()
+    movie_service = MovieService(session)
+    movie = await movie_service.get_movie_by_code(code)
+    
+    if not movie:
+        await message.answer(f"❌ '{code}' kodli kontent topilmadi.")
+        await state.clear()
+        return
+    
+    if not movie.is_series:
+        await message.answer(f"⚠️ <b>'{movie.title}'</b> seryal emas. Agar u seryal bo'lsa, avval tahrirlash orqali seryalga o'tkazing.", parse_mode="HTML")
+        await state.clear()
+        return
+
+    last_ep = await movie_service.get_last_episode_number(movie.id)
+    next_ep = last_ep + 1
+    
+    await state.update_data(movie_id=movie.id, episode_number=next_ep)
+    await state.set_state(AdminStates.waiting_for_episode_file)
+    await message.answer(
+        f"🎬 <b>{movie.title}</b> seryali.\n\n"
+        f"🎞 Endi <b>{next_ep}-qism</b> videosini yuboring:", 
+        parse_mode="HTML"
+    )
+
 # --- Kontent Qo'shish ---
 
 @router.message(F.text == "🎬 Kino qo'shish")
@@ -172,21 +213,60 @@ async def add_content_start(message: types.Message, state: FSMContext, session: 
     user_service = UserService(session)
     if not await user_service.is_admin(message.from_user.id): return
     
-    await state.update_data(content_type="movie")
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Yagona kino (film)", callback_data="add_type:movie")
+    builder.button(text="Seriyali kino (seryal)", callback_data="add_type:series")
+    builder.adjust(1)
+    await message.answer("🎥 Kontent turini tanlang:", reply_markup=builder.as_markup())
+
+@router.callback_query(F.data.startswith("add_type:"))
+async def process_add_type(callback: types.CallbackQuery, state: FSMContext):
+    content_type = callback.data.split(":")[1]
+    await state.update_data(content_type=content_type)
     await state.set_state(AdminStates.waiting_for_title)
-    await message.answer("🎥 Kino <b>nomini</b> kiriting:", parse_mode="HTML")
+    await callback.message.edit_text("🎥 Kontent <b>nomini</b> kiriting:", parse_mode="HTML")
+    await callback.answer()
 
 # add_type: Callback removed as we skip the choice
 
 @router.message(AdminStates.waiting_for_title)
 async def process_title(message: types.Message, state: FSMContext, session: AsyncSession):
-    await state.update_data(title=message.text.strip())
+    title = message.text.strip()
+    await state.update_data(title=title)
     movie_service = MovieService(session)
     data = await state.get_data()
     next_code = await movie_service.get_next_movie_code(data['content_type'])
     
-    await state.set_state(AdminStates.waiting_for_code)
-    await message.answer(f"🔢 Kontent <b>kodini</b> kiriting (Tavsiya etiladi: <code>{next_code}</code>):", parse_mode="HTML")
+    if data['content_type'] == "series":
+        # Seryal bo'lsa treylerni qidirib ko'ramiz
+        trailer = await movie_service.get_trailer_by_title(title)
+        current_code = trailer.code if trailer else next_code
+        file_id = trailer.file_id if trailer else "pending"
+        
+        if trailer:
+            # Agar treyler topilsa, uni seryalga aylantiramiz
+            await movie_service.update_movie(trailer.id, is_series=True)
+            movie_id = trailer.id
+            status_text = f"✅ Treyler topildi (Kodi: <code>{current_code}</code>)."
+        else:
+            # Treyler topilmasa yangi movie yaratamiz (media_type keyinchalik 1-qism bilan yangilanadi)
+            # Dublikatni tekshirish (poyga holati bo'lmasligi uchun)
+            while await movie_service.get_movie_by_code(current_code):
+                current_code = await movie_service.get_next_movie_code()
+
+            new_movie = await movie_service.add_movie(
+                title=title, code=current_code, content_type="movie", 
+                file_id="pending", media_type="video", is_series=True
+            )
+            movie_id = new_movie.id
+            status_text = f"⚠️ Treyler topilmadi. Poster uchun 1-qism ishlatiladi. Kodi: <code>{current_code}</code>"
+        
+        await state.update_data(movie_id=movie_id, code=current_code, episode_number=1)
+        await state.set_state(AdminStates.waiting_for_episode_file)
+        await message.answer(f"🎬 <b>{title}</b> (Kodi: {current_code})\n{status_text}\n\n1-qismni yuboring:", parse_mode="HTML")
+    else:
+        await state.set_state(AdminStates.waiting_for_code)
+        await message.answer(f"🔢 Kontent <b>kodini</b> kiriting (Tavsiya etiladi: <code>{next_code}</code>):", parse_mode="HTML")
 
 @router.message(AdminStates.waiting_for_code)
 async def process_code(message: types.Message, state: FSMContext, session: AsyncSession):
@@ -249,7 +329,8 @@ async def process_file(message: types.Message, state: FSMContext, session: Async
             code=data['code'],
             content_type=data['content_type'],
             file_id=file_id,
-            media_type=media_type
+            media_type=media_type,
+            is_series=False
         )
         await message.answer(f"✅ Kino muvaffaqiyatli qo'shildi!\nID: {new_movie.id}, Kod: {new_movie.code}")
     except Exception as e:
@@ -257,6 +338,66 @@ async def process_file(message: types.Message, state: FSMContext, session: Async
         await message.answer(f"❌ <b>Bazaga saqlashda xatolik yuz berdi:</b>\n<code>{str(e)}</code>", parse_mode="HTML")
     
     await state.clear()
+
+@router.message(AdminStates.waiting_for_episode_file)
+async def process_episode_file(message: types.Message, state: FSMContext, session: AsyncSession):
+    file_id = None
+    media_type = "video"
+    if message.video: file_id, media_type = message.video.file_id, "video"
+    elif message.document: file_id, media_type = message.document.file_id, "document"
+    elif message.animation: file_id, media_type = message.animation.file_id, "video"
+
+    if not file_id:
+        await message.answer("⚠️ Iltimos, seryal qismi uchun video fayl yuboring.")
+        return
+
+    data = await state.get_data()
+    movie_id = data['movie_id']
+    movie_service = MovieService(session)
+    
+    # Ommaviy yuklashda tartib buzilmasligi uchun lock ishlatamiz
+    async with episode_lock:
+        # Haqiqiy oxirgi qism raqamini olamiz (Parallel yuklashlarni hisobga olgan holda)
+        count = await movie_service.get_total_episodes_count(movie_id)
+        ep_no = count + 1
+        
+        # Agar bu birinchi qism bo'lsa va poster hali 'pending' bo'lsa
+        if ep_no == 1:
+            movie = await session.get(Movie, movie_id)
+            if movie and movie.file_id == "pending":
+                await movie_service.update_movie(movie_id, file_id=file_id, media_type=media_type)
+        
+        await movie_service.add_episode(movie_id, ep_no, file_id)
+        await session.commit() # Lock ichida commit qilish xavfsizroq
+
+    # Obunachilarga bildirishnoma yuborish
+    from database.models import Movie as MovieModel
+    movie = await session.get(MovieModel, movie_id)
+    if movie:
+        subscribers = await movie_service.get_subscribers(movie_id)
+        if subscribers:
+            notify_text = (
+                f"🎬 <b>YANGI QISM QO'SHILDI!</b>\n\n"
+                f"📺 <b>{movie.title}</b>\n"
+                f"🔢 <b>{ep_no}-qism</b>\n"
+                f"🆔 <b>Kodi:</b> <code>{movie.code}</code>"
+            )
+            for sub in subscribers:
+                try:
+                    await message.bot.send_message(chat_id=sub.user_id, text=notify_text, parse_mode="HTML")
+                    await asyncio.sleep(0.05) # Flood control
+                except: continue
+
+    await state.update_data(episode_number=ep_no + 1)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Yakunlash", callback_data="finish_add_eps")
+    await message.answer(f"✅ <b>{ep_no}-qism</b> qo'shildi!\n\nKeyingi qismni yuboring yoki yakunlang:", reply_markup=builder.as_markup(), parse_mode="HTML")
+
+@router.callback_query(F.data == "finish_add_eps")
+async def finish_add_eps(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("✅ Seryal qismlarini yuklash yakunlandi.")
+    await callback.answer()
 
 # --- Kontent Tahrirlash ---
 
@@ -548,10 +689,38 @@ async def process_ad_channel_id(message: types.Message, state: FSMContext):
 @router.message(AdminStates.waiting_for_ad_channel_link)
 async def process_ad_channel_link(message: types.Message, state: FSMContext, session: AsyncSession):
     link = message.text.strip()
+    if not link.startswith("https://t.me/"):
+        await message.answer("⚠️ Iltimos, haqiqiy Telegram ssilkasini yuboring (https://t.me/...).")
+        return
+
     data = await state.get_data()
-    session.add(AdChannel(channel_id=data['ad_channel_id'], link=link))
-    await session.commit()
-    await message.answer("✅ Kanal qo'shildi!")
+    ch_id = data['ad_channel_id']
+    
+    # Tekshirish: Bot bu kanalni ko'ra oladimi?
+    try:
+        chat = await message.bot.get_chat(ch_id)
+        # Agar numeric ID bo'lsa, uni bazaga aniqroq saqlash uchun yangilaymiz
+        final_id = str(chat.id)
+    except Exception as e:
+        await message.answer(f"❌ <b>Xatolik:</b> Bot bu kanalni topa olmadi yoki unga a'zo emas.\n\n<code>{str(e)}</code>", parse_mode="HTML")
+        return
+
+    try:
+        # Dublikatni tekshirish
+        stmt = select(AdChannel).where(AdChannel.channel_id == final_id)
+        res = await session.execute(stmt)
+        if res.scalar_one_or_none():
+            await message.answer("⚠️ Bu kanal allaqachon majburiy obuna ro'yxatida bor.")
+            await state.clear()
+            return
+
+        session.add(AdChannel(channel_id=final_id, link=link))
+        await session.commit()
+        await message.answer(f"✅ <b>Kanal muvaffaqiyatli qo'shildi!</b>\nNomi: {chat.title}\nID: <code>{final_id}</code>", parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Kanal saqlashda xato: {e}")
+        await message.answer(f"❌ <b>Bazaga saqlashda xatolik:</b>\n<code>{str(e)}</code>", parse_mode="HTML")
+    
     await state.clear()
 
 @router.callback_query(F.data == "del_ad_channel")

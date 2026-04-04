@@ -5,7 +5,6 @@ def get_main_menu():
         [KeyboardButton(text="🔍 Kino qidirish")],
         [KeyboardButton(text="🔥 Yangi kinolar"), KeyboardButton(text="⭐️ Top kinolar")],
         [KeyboardButton(text="📌 Watchlist"), KeyboardButton(text="🕒 Tarix")],
-        [KeyboardButton(text="📂 Bo'limlar"), KeyboardButton(text="📊 Statistika")],
-        [KeyboardButton(text="👨‍💻 Adminga murojaat")]
-    ]
+        [KeyboardButton(text="📂 Bo'limlar"),KeyboardButton(text="👨‍💻 Adminga murojaat")]
+    ]       
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)

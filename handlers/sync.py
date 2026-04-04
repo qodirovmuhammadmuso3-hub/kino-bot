@@ -123,25 +123,34 @@ async def sync_movie_handler(post: types.Message, bot: Bot, session: AsyncSessio
         logging.info(f"KOD TOPILDI: {code} (Turi: {content_type})")
         
         movie = await movie_service.get_movie_by_code(code)
+        
+        # Seryal qismini aniqlash
+        is_ser, ep_num, title_from_msg = parse_episode(msg_text, movie.title if movie else "Noma'lum")
+        
         if movie and movie.content_type == content_type:
-            # FAQAT BIR XIL TURDAGI KONTENTNI YANGILAYMIZ
-            if media:
+            # 1. MAVJUD KONTENTNI YANGILASH
+            if content_type == "movie" and is_ser and ep_num:
+                # BU SERYALNING YANGI QISMI
+                await movie_service.update_movie(movie.id, is_series=True)
+                await movie_service.add_episode(movie.id, ep_num, media.file_id)
+                logging.info(f"SERYAL QISMI QO'SHILDI: {movie.title} - {ep_num}-qism")
+            elif media:
+                # ODDIY KINO YOKI TREYLERNI YANGILASH
                 update_data = {"file_id": media.file_id, "media_type": media_type, "description": msg_text}
-                lines = msg_text.split('\n') if msg_text else []
-                raw_title = lines[0][:50] if lines else movie.title
-                is_ser, ep_num, new_title = parse_episode(msg_text, raw_title)
-                update_data["title"] = new_title or raw_title
+                update_data["title"] = title_from_msg or movie.title
                 update_data["is_series"] = is_ser
-                
                 await movie_service.update_movie_by_code(code, **update_data)
                 logging.info(f"YANGILANDI (OVERWRITE): {code}")
         elif not movie:
-            # YANGI QO'SHILDI
+            # 2. YANGI KONTENT QO'SHISH
             if media:
-                lines = msg_text.split('\n') if msg_text else []
-                raw_title = lines[0][:50] if lines else "Noma'lum"
-                is_series, ep_num, title = parse_episode(msg_text, raw_title)
-                await movie_service.add_movie(code=code, title=title, file_id=media.file_id, content_type=content_type, media_type=media_type, is_series=is_series, description=msg_text)
+                new_movie = await movie_service.add_movie(
+                    code=code, title=title_from_msg, file_id=media.file_id, 
+                    content_type=content_type, media_type=media_type, 
+                    is_series=is_ser, description=msg_text
+                )
+                if content_type == "movie" and is_ser and ep_num:
+                    await movie_service.add_episode(new_movie.id, ep_num, media.file_id)
                 logging.info(f"YANGI QO'SHILDI: {code}")
 
     # 2. Avtomatik kod berish (Matnda kod topilmasa yoki Trailer kanali bo'lsa)

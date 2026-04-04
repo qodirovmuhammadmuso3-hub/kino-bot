@@ -88,6 +88,7 @@ class History(Base):
     viewed_at = Column(DateTime(timezone=True), server_default=func.now())
     
     user = relationship("User", back_populates="history")
+    movie = relationship("Movie")
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
@@ -98,7 +99,7 @@ class Subscription(Base):
 class AdChannel(Base):
     __tablename__ = "ad_channels"
     id = Column(Integer, primary_key=True)
-    channel_id = Column(BigInteger, unique=True, nullable=False)
+    channel_id = Column(String(255), unique=True, nullable=False)
     link = Column(String(255), nullable=False)
 
 class BotSetting(Base):

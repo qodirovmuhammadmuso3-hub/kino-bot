@@ -16,7 +16,7 @@ class SupportStates(StatesGroup):
     waiting_for_support_message = State()
 
 @router.message(CommandStart())
-async def start_handler(message: types.Message, session: AsyncSession, command: CommandObject = None):
+async def start_handler(message: types.Message, session: AsyncSession, state: FSMContext = None, command: CommandObject = None):
     user_service = UserService(session)
     user = await user_service.get_or_create_user(
         user_id=message.from_user.id,
@@ -25,9 +25,18 @@ async def start_handler(message: types.Message, session: AsyncSession, command: 
     )
     
     # Deep linking (kod bilan kirish)
-    if command and command.args:
+    args = command.args if command else None
+    
+    # Agar callback'dan kelayotgan bo'lsak va state'da saqlangan kod bo'lsa
+    if not args and state:
+        data = await state.get_data()
+        args = data.get("pending_movie_code")
+        if args:
+            await state.update_data(pending_movie_code=None) # Bir marta ishlatamiz
+    
+    if args:
         from handlers.movies import process_movie_search
-        await process_movie_search(command.args, message, None, session)
+        await process_movie_search(args, message, None, session)
         return
     
     display_name = message.from_user.mention_html()
@@ -39,10 +48,11 @@ async def start_handler(message: types.Message, session: AsyncSession, command: 
     await message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode="HTML")
 
 @router.callback_query(F.data == "check_subs")
-async def check_subscription_handler(callback: types.CallbackQuery, session: AsyncSession):
+async def check_subscription_handler(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     await callback.answer("⏳ Tekshirilmoqda...")
-    # Middleware yana tekshiradi, agar o'tsa start_handler chaqiriladi
-    await start_handler(callback.message, session)
+    # Middleware yana tekshiradi. Agar o'tsa, start_handler chaqiriladi.
+    # Bu yerda start_handler'ga state'ni uzatamiz, u yerdan pending_movie_code olinadi.
+    await start_handler(callback.message, session, state)
     try: await callback.message.delete()
     except: pass
 

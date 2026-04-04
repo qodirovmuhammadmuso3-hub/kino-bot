@@ -59,12 +59,9 @@ class MovieService:
         return movie
 
     async def get_next_movie_code(self, content_type="movie"):
-        """Keyingi bo'sh kodni hisoblash (Raqamli tartibda)."""
-        # Oxirgi raqamli kodni topish (Lexicographical emas, raqamli tartibda)
-        # Uzunligi va qiymati bo'yicha kamayish tartibida (masalan: 10, 9, 8...)
-        query = select(Movie.code).where(
-            Movie.content_type == content_type
-        ).order_by(desc(func.length(Movie.code)), desc(Movie.code)).limit(1)
+        """Keyingi bo'sh kodni hisoblash (Raqamli tartibda, barcha turlar uchun unikallik)."""
+        # Barcha kinolar ichidan eng oxirgi raqamli kodni topamiz
+        query = select(Movie.code).order_by(desc(func.length(Movie.code)), desc(Movie.code)).limit(1)
         
         result = await self.session.execute(query)
         last_code_str = result.scalar_one_or_none()
@@ -258,3 +255,26 @@ class MovieService:
         
         result = await self.session.execute(query)
         return result.scalars().first()
+
+    async def get_trailer_by_title(self, title: str):
+        """Sarlavha orqali treylerni izlash."""
+        return await self.get_movie_by_title(title, content_types=["trailer"])
+
+    async def add_episode(self, movie_id: int, episode_number: int, file_id: str):
+        """Seryalga yangi qism qo'shish."""
+        episode = Episode(movie_id=movie_id, episode_number=episode_number, file_id=file_id)
+        self.session.add(episode)
+        await self.session.commit()
+        return episode
+
+    async def get_last_episode_number(self, movie_id: int):
+        """Seryalning oxirgi qism raqamini olish."""
+        query = select(func.max(Episode.episode_number)).where(Episode.movie_id == movie_id)
+        result = await self.session.execute(query)
+        return result.scalar() or 0
+
+    async def get_total_episodes_count(self, movie_id: int):
+        """Seryal qismlarining umumiy sonini olish."""
+        query = select(func.count(Episode.id)).where(Episode.movie_id == movie_id)
+        result = await self.session.execute(query)
+        return result.scalar() or 0
